@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>兴趣图谱 · 缺角视图</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  html,body{ margin:0; padding:0; }
+  header{ padding:18px 20px 12px; border-bottom:1px solid var(--line); }
+  header h1{ margin:0; font-size:19px; font-weight:600; letter-spacing:.5px; }
+  header .sub{ margin-top:6px; font-size:13px; color:var(--muted); }
+  header .sub b{ color:var(--accent); font-weight:600; }
+  .layout{ display:grid; grid-template-columns:1fr 320px; gap:0; min-height:calc(100vh - 96px); }
+  .graph-wrap{ position:relative; border-right:1px solid var(--line); }
+  svg{ display:block; width:100%; height:62vh; touch-action:none; }
+  .node circle{ cursor:pointer; transition:opacity .2s; }
+  .node text{ font-size:9px; fill:var(--muted); pointer-events:none; user-select:none;
+    transition:opacity .2s; }
+  .node.sel circle{ stroke:var(--accent); stroke-width:2.5; }
+  .aside{ padding:16px 16px 24px; overflow:auto; }
+  .aside h2{ font-size:14px; font-weight:600; margin:4px 0 12px; color:var(--ink); }
+  .aside h2:not(:first-child){ margin-top:26px; }
+  .domain{ display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px;
+    cursor:pointer; }
+  .domain:hover{ background:var(--surface-2); }
+  .domain .dot{ width:10px; height:10px; border-radius:50%; flex:none; }
+  .domain .nm{ font-size:13px; flex:1; }
+  .domain .ct{ font-size:12px; color:var(--muted); }
+  .domain .goto{ font-size:11px; color:var(--faint); flex:none; padding:1px 5px; border-radius:6px; }
+  .domain:hover .goto{ color:var(--accent); background:var(--accent-line); }
+  .bar{ height:4px; border-radius:2px; background:var(--line-soft); margin-top:5px; overflow:hidden; }
+  .bar > i{ display:block; height:100%; }
+  .gap{ background:var(--surface); border:1px solid var(--line); border-radius:10px;
+    padding:11px 12px; margin-bottom:10px; }
+  .gap .t{ font-size:13px; font-weight:600; color:var(--ink); }
+  .gap .h{ font-size:12px; color:var(--muted); margin-top:4px; line-height:1.5; }
+  .gap .tag{ display:inline-block; font-size:11px; color:var(--accent);
+    border:1px solid var(--accent-line); border-radius:20px; padding:1px 8px; margin-bottom:6px; }
+  .empty{ font-size:12px; color:var(--muted); padding:8px 2px; }
+  .note{ font-size:11px; color:var(--faint); margin-top:18px; line-height:1.6; }
+  .toolbar{ position:absolute; top:12px; left:12px; display:flex; gap:8px; }
+  .btn{ font-size:12px; color:var(--muted); background:var(--surface);
+    border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; }
+  .btn:hover{ color:var(--ink); border-color:var(--faint); }
+  .tooltip{ position:fixed; pointer-events:none; z-index:50; max-width:240px;
+    background:var(--ink); color:var(--on-ink); font-size:12px; line-height:1.55;
+    padding:9px 11px; border-radius:8px; border:1px solid rgba(35,32,27,.6); opacity:0; transition:opacity .12s; }
+  /* 领域相邻：来自真实数据（共享技术栈），与「缺角」的种子先验分开呈现 */
+  .lnk{ display:flex; align-items:center; gap:7px; padding:6px 8px; border-radius:8px;
+    font-size:12.5px; cursor:pointer; }
+  .lnk:hover{ background:var(--surface-2); }
+  .lnk .pair{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lnk .n{ font-size:11px; color:var(--muted); font-family:var(--mono); flex:none; }
+  .lnk .why{ font-size:11px; color:var(--faint); flex:none; max-width:96px; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .src-note{ font-size:11px; color:var(--faint); margin:-4px 0 10px; line-height:1.5;
+    border-left:2px solid var(--line); padding-left:8px; }
+  .sample-warn{ font-size:12px; color:var(--warn); background:rgba(181,131,46,.10);
+    border:1px solid rgba(181,131,46,.34); border-radius:8px; padding:8px 10px; margin-bottom:10px; }
+  @media (max-width:760px){
+    .layout{ grid-template-columns:1fr; }
+    .graph-wrap{ border-right:none; border-bottom:1px solid var(--line); }
+    svg{ height:52vh; }
+    .aside{ border-top:none; }
+  }
+</style>
+</head>
+<body data-nav="map">
+<header>
+  <h1>兴趣图谱 · 缺角视图</h1>
+  <div class="sub">已收藏 <b id="st-total">0</b> 个仓库 · 覆盖 <b id="st-domain">0</b> 个领域 · 缺角建议 <b id="st-gap">0</b> 条</div>
+</header>
+
+<div class="layout">
+  <div class="graph-wrap">
+    <div class="toolbar">
+      <span class="btn" id="btn-reset">重置视图</span>
+    </div>
+    <svg id="svg"></svg>
+  </div>
+
+  <aside>
+    <h2>领域分布</h2>
+    <div id="domains"></div>
+
+    <h2>领域相邻（来自你的收藏）</h2>
+    <div class="src-note">这一块是真算出来的：两个领域之间有多少种技术栈重叠。有重叠说明它们在你这儿是连着的 —— 点一下高亮对应领域。</div>
+    <div id="links"></div>
+
+    <h2>可能感兴趣（缺角）</h2>
+    <div class="src-note">这一块是<b>种子先验</b>（编者预判的常见搭配），不是对你的行为统计 —— 样本够了以后会换成真共现。</div>
+    <div id="gaps"></div>
+    <div class="note">关联边表示仓库间的领域 / 标签关系。缺角仅供参考，不代表你一定需要。</div>
+  </aside>
+</div>
+
+<div class="tooltip" id="tip"></div>
+
+<script>
+const PALETTE = {
+  "Web 框架":"#B5673E","AI·LLM":"#5B7FB0","前端/UI":"#B5832E","DevOps/云":"#4F8A82",
+  "数据库":"#6B8E5A","CLI/工具":"#8A8275","移动端":"#8A6BA8","安全":"#B4472F",
+  "数据/可视化":"#3F7FA0","知识/笔记":"#A8743F","未分类":"#9A938A"
+};
+const colorOf = d => PALETTE[d] || "#6b7280";
+
+const svg = document.getElementById("svg");
+const tip = document.getElementById("tip");
+const NS = "http://www.w3.org/2000/svg";
+let nodes = [], edges = [], byId = {}, W = 0, H = 0, alpha = 1, selId = null;
+
+function resize(){
+  const r = svg.getBoundingClientRect();
+  W = r.width; H = r.height;
+}
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+
+function load(){
+  fetch("/api/graph").then(r=>r.json()).then(g=>{
+    nodes = g.nodes; edges = g.edges; byId = {};
+    nodes.forEach(n=> byId[n.id] = n);
+    document.getElementById("st-total").textContent = g.total;
+    document.getElementById("st-domain").textContent = g.domains.length;
+    document.getElementById("st-gap").textContent = g.gaps.length;
+    renderDomains(g.domains);
+    renderLinks(g.domain_links || []);
+    renderGaps(g.gaps, g.sample || g.total || 0);
+    initGraph();
+  }).catch(e=>{
+    document.getElementById("domains").innerHTML =
+      '<div class="empty">加载失败：'+esc(e.message)+'</div>';
+  });
+}
+
+/* 领域相邻：来自真实行为（领域间共享的技术栈），与「缺角」的种子先验分开呈现 */
+function renderLinks(links){
+  const box = document.getElementById("links");
+  if(!links.length){
+    box.innerHTML = '<div class="empty">还没有可算的相邻关系——等你收藏的领域之间有共用技术栈时就会长出来。</div>';
+    return;
+  }
+  box.innerHTML = links.slice(0,12).map(l =>
+    '<div class="lnk" data-dom="'+esc(l.from)+'">'+
+      '<span class="pair">'+esc(l.from)+' ↔ '+esc(l.to)+'</span>'+
+      '<span class="why">'+esc((l.samples||[]).join('、'))+'</span>'+
+      '<span class="n">×'+l.shared+'</span>'+
+    '</div>').join('');
+  box.querySelectorAll('.lnk').forEach(el=>{
+    el.onclick = ()=> toggleDomain(el.getAttribute('data-dom'));
+  });
+}
+
+function renderDomains(domains){
+  const max = Math.max(1, ...domains.map(d=>d.count));
+  const box = document.getElementById("domains");
+  box.innerHTML = "";
+  if(!domains.length){ box.innerHTML = '<div class="empty">暂无数据，先去收藏一些仓库。</div>'; return; }
+  domains.forEach(d=>{
+    const el = document.createElement("div");
+    el.className = "domain";
+    el.setAttribute("data-v", d.name);
+    el.innerHTML =
+      '<span class="dot" style="background:'+colorOf(d.name)+'"></span>'+
+      '<span class="nm">'+d.name+'</span>'+
+      '<span class="ct">'+d.count+'</span>'+
+      '<span class="goto" title="在卡片页查看该领域">↗</span>'+
+      '<div class="bar" style="flex-basis:100%"><i style="width:'+(d.count/max*100)+'%;background:'+colorOf(d.name)+'"></i></div>';
+    el.onclick = (e)=>{
+      if(e.target && e.target.classList.contains('goto')){
+        location.href = 'cards.html?domain='+encodeURIComponent(d.name);
+        return;
+      }
+      toggleDomain(d.name);
+    };
+    box.appendChild(el);
+  });
+}
+
+function renderGaps(gaps, sample){
+  const box = document.getElementById("gaps");
+  box.innerHTML = "";
+  let warn = '';
+  if(sample && sample < 5){
+    warn = '<div class="sample-warn">当前只有 '+sample+' 条收藏，任何「缺角」都还只是观察。样本到十几条以后再看才有意义。</div>';
+  }
+  if(!gaps.length){ box.innerHTML = warn + '<div class="empty">暂无缺角建议（已覆盖领域较均衡）。</div>'; return; }
+  box.innerHTML = warn;
+  gaps.forEach(gp=>{
+    const el = document.createElement("div");
+    el.className = "gap";
+    el.innerHTML =
+      '<span class="tag">种子 · '+esc(gp.from)+' → '+esc(gp.to)+'</span>'+
+      '<div class="t">'+esc(gp.to)+'</div>'+
+      '<div class="h">'+esc(gp.hint)+'</div>';
+    box.appendChild(el);
+  });
+}
+
+/* ---------- 力导向图 ---------- */
+function initGraph(){
+  resize();
+  // 清空
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  // 初始化位置
+  nodes.forEach((n,i)=>{
+    n.x = W/2 + Math.cos(i)*120 + (Math.random()-0.5)*60;
+    n.y = H/2 + Math.sin(i)*120 + (Math.random()-0.5)*60;
+    n.vx = 0; n.vy = 0;
+    n.r = 7 + Math.min(12, Math.log10((n.stars||1)+1)*3.4);
+    n.fixed = false;
+  });
+  alpha = 1;
+  // 建边
+  const edgeEls = edges.map(e=>{
+    const l = document.createElementNS(NS,"line");
+    l.setAttribute("class","edge");
+    svg.appendChild(l);
+    return {el:l, e};
+  });
+  // 建节点
+  const nodeEls = nodes.map(n=>{
+    const g = document.createElementNS(NS,"g");
+    g.setAttribute("class","node");
+    const c = document.createElementNS(NS,"circle");
+    c.setAttribute("r", n.r);
+    c.setAttribute("fill", colorOf(n.domain));
+    const t = document.createElementNS(NS,"text");
+    t.setAttribute("text-anchor","middle");
+    t.setAttribute("dy", n.r + 10);
+    t.textContent = n.name;
+    g.appendChild(c); g.appendChild(t);
+    svg.appendChild(g);
+    bindNode(g, n);
+    return {g, c, t, n};
+  });
+  window.__edgeEls = edgeEls;
+  window.__nodeEls = nodeEls;
+  if(!window.__rafStarted){ window.__rafStarted = true; requestAnimationFrame(tick); }
+}
+
+function neighbors(id){
+  const s = new Set();
+  edges.forEach(e=>{
+    if(e.source===id) s.add(e.target);
+    if(e.target===id) s.add(e.source);
+  });
+  return s;
+}
+
+function tick(){
+  // 斥力
+  for(let i=0;i<nodes.length;i++){
+    for(let j=i+1;j<nodes.length;j++){
+      const a=nodes[i], b=nodes[j];
+      let dx=a.x-b.x, dy=a.y-b.y;
+      let d2=dx*dx+dy*dy || 0.01;
+      let d=Math.sqrt(d2);
+      let f=2600/d2;
+      let fx=dx/d*f, fy=dy/d*f;
+      a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
+    }
+  }
+  // 引力(边)
+  edges.forEach(e=>{
+    const a=byId[e.source], b=byId[e.target];
+    if(!a||!b) return;
+    let dx=b.x-a.x, dy=b.y-a.y;
+    let d=Math.sqrt(dx*dx+dy*dy)||0.01;
+    let f=(d-92)*0.018;
+    let fx=dx/d*f, fy=dy/d*f;
+    a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
+  });
+  // 中心引力
+  nodes.forEach(n=>{
+    n.vx += (W/2 - n.x)*0.0018;
+    n.vy += (H/2 - n.y)*0.0018;
+  });
+  // 积分
+  nodes.forEach(n=>{
+    if(n.fixed) return;
+    n.vx*=0.84; n.vy*=0.84;
+    n.x += n.vx*alpha; n.y += n.vy*alpha;
+    n.x = Math.max(n.r, Math.min(W-n.r, n.x));
+    n.y = Math.max(n.r, Math.min(H-n.r, n.y));
+  });
+  alpha *= 0.992; if(alpha<0.02) alpha=0.02;
+  render();
+  requestAnimationFrame(tick);
+}
+
+function render(){
+  window.__edgeEls.forEach(({el,e})=>{
+    const a=byId[e.source], b=byId[e.target];
+    if(!a||!b) return;
+    el.setAttribute("x1",a.x); el.setAttribute("y1",a.y);
+    el.setAttribute("x2",b.x); el.setAttribute("y2",b.y);
+  });
+  window.__nodeEls.forEach(({g,c,t,n})=>{
+    g.setAttribute("transform","translate("+n.x+","+n.y+")");
+  });
+}
+
+/* ---------- 交互 ---------- */
+function bindNode(g, n){
+  let moved=false;
+  const down = (cx,cy)=>{ n.fixed=true; moved=false; };
+  const move = (cx,cy)=>{
+    if(!n.fixed) return;
+    const r=svg.getBoundingClientRect();
+    const x=cx-r.left, y=cy-r.top;
+    if(Math.abs(x-n.x)>3||Math.abs(y-n.y)>3) moved=true;
+    n.x=x; n.y=y;
+  };
+  const up = ()=>{ n.fixed=false; if(!moved) select(n.id); };
+
+  g.addEventListener("mousedown", e=>{ e.preventDefault(); down(e.clientX,e.clientY); });
+  window.addEventListener("mousemove", e=>{ if(n.fixed) move(e.clientX,e.clientY); });
+  window.addEventListener("mouseup", ()=>{ if(n.fixed) up(); });
+  g.addEventListener("touchstart", e=>{ const t=e.touches[0]; down(t.clientX,t.clientY); }, {passive:true});
+  g.addEventListener("touchmove", e=>{ const t=e.touches[0]; move(t.clientX,t.clientY); }, {passive:true});
+  g.addEventListener("touchend", ()=>{ if(n.fixed) up(); });
+
+  g.addEventListener("mouseenter", e=>showTip(n, e));
+  g.addEventListener("mousemove", e=>moveTip(e));
+  g.addEventListener("mouseleave", hideTip);
+}
+function showTip(n, e){
+  tip.innerHTML = '<b>'+n.name+'</b><br>领域：'+n.domain+
+    '<br>星标：'+(n.stars||0).toLocaleString()+' · '+n.maturity+
+    (n.purpose? '<br><br>'+n.purpose : '');
+  tip.style.opacity = 1; moveTip(e);
+}
+function moveTip(e){ tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; }
+function hideTip(){ tip.style.opacity=0; }
+
+function select(id){
+  selId = (selId===id)? null : id;
+  applyHighlight();
+}
+function toggleDomain(name){
+  // 点击领域：高亮该领域所有节点
+  const any = nodes.some(n=>n.domain===name && selId!=="D:"+name);
+  selId = any ? ("D:"+name) : null;
+  applyHighlight();
+}
+function applyHighlight(){
+  const nb = selId && !String(selId).startsWith("D:") ? neighbors(selId) : null;
+  const domainFilter = selId && String(selId).startsWith("D:") ? selId.slice(2) : null;
+  window.__nodeEls.forEach(({g,n})=>{
+    let on = true;
+    if(domainFilter) on = (n.domain===domainFilter);
+    else if(nb!==null) on = (n.id===selId || nb.has(n.id));
+    g.classList.toggle("dim", !on);
+    g.classList.toggle("sel", n.id===selId);
+  });
+  window.__edgeEls.forEach(({el,e})=>{
+    let hot=false, on=true;
+    if(domainFilter){
+      on = (byId[e.source].domain===domainFilter && byId[e.target].domain===domainFilter);
+    } else if(nb!==null){
+      on = (e.source===selId||e.target===selId);
+      hot = on;
+    }
+    el.classList.toggle("dim", !on);
+    el.classList.toggle("hot", hot);
+  });
+}
+
+document.getElementById("btn-reset").onclick = ()=>{
+  selId = null; applyHighlight();
+};
+window.addEventListener("resize", ()=>{ resize(); });
+
+load();
+</script>
+<script src="/nav.js"></script>
+</body>
+</html>

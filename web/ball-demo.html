@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#FBFAF7">
+<title>收藏箱悬浮球 · 演示</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;max-width:640px;margin:0 auto;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.7;padding:24px 18px 280px}
+  h1{font-size:20px;margin:0 0 6px}
+  h2{font-size:15px;color:var(--muted);font-weight:500;margin:26px 0 10px}
+  p{font-size:14px}
+  code{background:var(--surface-2);color:var(--accent-2);padding:2px 6px;border-radius:6px;font-size:13px;font-family:var(--mono)}
+  ul{font-size:14px;padding-left:20px}
+  li{margin:6px 0}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px;margin:10px 0}
+  .filler{color:var(--muted);font-size:13px;margin-top:30px}
+</style>
+</head>
+<body>
+  <h1>收藏箱悬浮球 · 跨页面一键收藏</h1>
+  <p>这是<strong>任意一个页面</strong>的示例。右下角（或你拖动到的位置）那枚赤陶橙“收”球，就是全局悬浮收藏器——它不属于这个页面，而是常驻在任意页面 / webview 之上。</p>
+
+  <div class="card">
+    <h2 style="margin-top:0">怎么用</h2>
+    <ul>
+      <li>复制一个 GitHub 仓库链接，<strong>点一下球</strong> → 自动从剪贴板收藏</li>
+      <li>把链接文字<strong>拖到球上</strong> → 松手即收藏</li>
+      <li>点一下球（剪贴板里没有链接）→ 弹出输入框手动粘贴</li>
+      <li><strong>拖动球</strong>可移动，松手吸附到屏幕边缘，位置会被记住</li>
+    </ul>
+  </div>
+
+  <h2>嵌入你自己的页面</h2>
+  <p>只需一行脚本，悬浮球即出现在你的任何页面 / 应用 webview 里：</p>
+  <p><code>&lt;script src="ball.js"&gt;&lt;/script&gt;</code></p>
+  <p>可选设置收集端点：<code>window.REPO_COLLECTOR = "https://你的域名/collect"</code>（默认同域 <code>/collect</code>）。</p>
+
+  <p class="filler">下面是一段占位内容，方便你滚动页面、感受“球始终悬浮在上方”的体验。向下滑，球不会消失；切到别的页面（同样引入 ball.js 的），球也在原位。这就是“随时、跨平台、一键拖入”的收集层。</p>
+  <p class="filler">占位文字：开源仓库的发现场景已从网页搜索转向短视频与社区推荐。当仓库链接出现在视频简介、评论或聊天里，用户需要的不是“再开一个工具”，而是一个随手可触的入口。悬浮球正是这个入口——它把收藏动作压缩成一次点按或一次拖拽，其余的交给后台分析与图谱。</p>
+
+  <script src="ball.js"></script>
+</body>
+</html>

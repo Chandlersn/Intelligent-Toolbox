@@ -1,0 +1,1323 @@
+"""收藏箱 · HTTP 服务层。
+
+结构约定（改造后）：
+  路由/传输  ── Handler 只做「解析请求 → 调业务函数 → 写响应」
+  业务逻辑  ── 模块级函数（collect_payload / regenerate_card / get_cards / ...）
+  存储      ── 统一走 db.connect()，不再各函数自己 sqlite3.connect
+  配置      ── 统一走 config，端口/路径/口令不再写死在源码里
+
+为什么把业务从 Handler 里抽出来：这些逻辑要能被测试直接调用。
+特别是 regenerate_card —— 「重算之后轴表必须与卡片一致」是一条核心回归，
+埋在处理器的 do_POST 里就永远测不到（P0-1 就是这么漏过去的）。
+
+一致性契约（本项目最重要的一条）：
+  repos.card 是唯一真源；repo_axis / tags 是可随时重建的派生物。
+  任何改写 card 的路径都必须紧跟一次 sync_axes()，否则四类视图会各说各话。
+"""
+
+import datetime
+import hmac
+import json
+import os
+import re
+import threading
+import time
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, quote, parse_qs, unquote
+
+import analyze
+import config
+import db
+
+# 兼容旧引用（migrate/外部脚本曾 import server.DB / server.PORT）
+ROOT = config.ROOT
+WEB_DIR = config.WEB_DIR
+DB = config.DB
+PORT = config.PORT
+
+# 收藏来源（谁把它放进来的）。推荐页必须带上，画像才知道「有多少是别人喂的」。
+SOURCES = {"manual", "recommend", "trend", "share", "bookmark", "ball", "import"}
+
+CTYPES = {
+    ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
+    ".json": "application/json", ".svg": "image/svg+xml", ".txt": "text/plain",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".ico": "image/x-icon", ".webmanifest": "application/manifest+json",
+}
+
+
+def init_db():
+    """建表 + 版本化迁移。幂等，每次启动都跑。"""
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS repos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT UNIQUE NOT NULL,
+            note TEXT,
+            status TEXT DEFAULT 'queued',
+            meta TEXT,
+            created_at TEXT
+        )"""
+    )
+    # 增量列：走 ensure_column（读 table_info 判断），不再用「ALTER 失败就 pass」猜
+    db.ensure_column(conn, "repos", "card", "TEXT")
+    db.ensure_column(conn, "repos", "source", "TEXT DEFAULT 'manual'")
+    # 多轴数据模型（多维同步存储与检索的根）
+    c.execute("CREATE TABLE IF NOT EXISTS axes (key TEXT PRIMARY KEY, name TEXT NOT NULL)")
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS repo_axis (
+            repo_id INTEGER NOT NULL,
+            axis_key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            weight REAL DEFAULT 1.0,
+            source TEXT DEFAULT 'heuristic',
+            confidence REAL DEFAULT 0.6,
+            PRIMARY KEY (repo_id, axis_key, value)
+        )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS tags (
+            repo_id INTEGER NOT NULL, tag TEXT NOT NULL,
+            PRIMARY KEY (repo_id, tag)
+        )"""
+    )
+    # 多轴查询是核心路径，按轴取值建索引（否则每次筛选都全表扫）
+    c.execute("CREATE INDEX IF NOT EXISTS idx_repo_axis_key_value ON repo_axis (axis_key, value)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_repo_axis_repo ON repo_axis (repo_id)")
+    for k, n in (
+        ("domain", "领域"), ("tech", "技术栈"), ("scene", "使用场景"),
+        ("gap", "认知缺角"), ("motive", "收藏动机"), ("timeline", "时间线"),
+    ):
+        c.execute("INSERT OR IGNORE INTO axes (key, name) VALUES (?, ?)", (k, n))
+    db.set_schema_version(conn, db.SCHEMA_VERSION)
+    conn.commit()
+    conn.close()
+
+
+def now():
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  缺角推断：种子先验 + 真实行为
+# ═══════════════════════════════════════════════════════════════════
+# SEED_GAP_COOCCUR 只是「冷启动种子」——样本不足时的兜底先验，不是行为统计。
+# 改造前它叫 GAP_COOCCUR，被当成结论输出，于是「镜子」照出来的其实是编者的预判。
+# 现在它降级为 prior，并且在返回结果里带 source="seed"，如实标注。
+SEED_GAP_COOCCUR = {
+    "Web 框架": ["前端/UI", "DevOps/云"],
+    "前端/UI": ["知识/笔记", "Web 框架"],
+    "AI·LLM": ["数据库", "知识/笔记", "数据/可视化"],
+    "数据库": ["DevOps/云", "AI·LLM"],
+    "CLI/工具": ["DevOps/云", "知识/笔记"],
+    "DevOps/云": ["数据库", "安全"],
+    "移动端": ["前端/UI", "知识/笔记"],
+    "安全": ["DevOps/云", "Web 框架"],
+    "数据/可视化": ["AI·LLM", "知识/笔记"],
+    "知识/笔记": ["前端/UI", "数据/可视化"],
+}
+
+
+def domain_adjacency(conn):
+    """领域邻接：基于你真实收藏算出来的「领域之间靠什么连上」。
+
+    做法：两个领域共享多少种技术栈取值（tech 轴）。这是能真正从行为数据里
+    算出来的部分 —— 缺角指向「还没有的领域」，天生算不出来（没有数据），
+    但「已有领域之间的相邻关系」可以，而且比写死的共现表诚实。
+
+    返回 [{from, to, shared, samples}]，shared = 共享技术栈个数。
+    """
+    c = conn.cursor()
+    c.execute("SELECT repo_id, axis_key, value FROM repo_axis WHERE axis_key IN ('domain','tech')")
+    dom_of, techs_of = {}, {}
+    for rid, ak, val in c.fetchall():
+        if ak == "domain":
+            dom_of[rid] = val
+        else:
+            techs_of.setdefault(rid, set()).add((val or "").lower())
+    dom_tech = {}
+    for rid, dom in dom_of.items():
+        dom_tech.setdefault(dom, set()).update(techs_of.get(rid) or set())
+    out = []
+    doms = sorted(dom_tech)
+    for i, a in enumerate(doms):
+        for b in doms[i + 1:]:
+            shared = dom_tech[a] & dom_tech[b]
+            if not shared:
+                continue
+            out.append({
+                "from": a, "to": b, "shared": len(shared),
+                "samples": sorted(shared)[:3],
+            })
+    out.sort(key=lambda x: -x["shared"])
+    return out
+
+
+def get_graph(sample_warn=True):
+    """聚合多轴数据 → 图谱结构。优先读 repo_axis，轴缺失时回退 card。"""
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute("SELECT id,url,meta,card FROM repos WHERE card IS NOT NULL")
+    rows = c.fetchall()
+    c.execute("SELECT repo_id, axis_key, value, confidence FROM repo_axis")
+    axis_rows = c.fetchall()
+    links = domain_adjacency(conn)
+    conn.close()
+
+    axes_by_repo = {}
+    for rid, ak, val, conf in axis_rows:
+        axes_by_repo.setdefault(rid, []).append(
+            {"axis": ak, "value": val, "confidence": conf}
+        )
+
+    nodes, edges, domains = [], [], {}
+    for rid, url, rmeta_s, rcard_s in rows:
+        try:
+            card = json.loads(rcard_s) if rcard_s else {}
+            meta = json.loads(rmeta_s) if rmeta_s else {}
+        except Exception:
+            card, meta = {}, {}
+        full = meta.get("name") or url
+        name = full.split("/")[-1] if "/" in full else full
+        my_axes = axes_by_repo.get(rid, [])
+        domain_vals = [a for a in my_axes if a["axis"] == "domain"]
+        if domain_vals:
+            domain = max(domain_vals, key=lambda a: a["confidence"])["value"]
+        else:
+            domain = card.get("domain", "未分类")
+        try:
+            stars = int(meta.get("stars") or 0)
+        except Exception:
+            stars = 0
+        nodes.append({
+            "id": rid, "url": url, "name": name, "domain": domain,
+            "axes": my_axes, "tags": card.get("tags", []), "stars": stars,
+            "maturity": card.get("maturity", ""),
+            "recommendation": card.get("recommendation", 0),
+            "purpose": (card.get("purpose") or "")[:140],
+            "why_needed": card.get("why_needed", ""),
+        })
+        d = domains.setdefault(domain, {"name": domain, "count": 0, "repos": [], "stars": 0})
+        d["count"] += 1
+        d["repos"].append(rid)
+        d["stars"] += stars
+        for rel in card.get("related_nodes", []):
+            edges.append({"source": rid, "target": rel["id"], "reason": rel.get("reason", "")})
+
+    node_ids = {n["id"] for n in nodes}
+    seen, uniq = set(), []
+    for e in edges:
+        if e["source"] not in node_ids or e["target"] not in node_ids:
+            continue
+        a, b = sorted((e["source"], e["target"]))
+        if (a, b) in seen:
+            continue
+        seen.add((a, b))
+        uniq.append(e)
+
+    domain_list = sorted(domains.values(), key=lambda x: -x["count"])
+
+    # 缺角 = 种子先验（明确标注来源，样本稀疏时提示别当真）
+    covered = set(domains.keys())
+    total = len(nodes)
+    gaps = []
+    for src_dom, targets in SEED_GAP_COOCCUR.items():
+        if src_dom not in covered:
+            continue
+        for t in targets:
+            if t in covered:
+                continue
+            hint = "你已收藏「%s」，同类收藏常也关注「%s」" % (src_dom, t)
+            if sample_warn and total < 5:
+                hint += "（当前样本仅 %d 条，先当观察，别当结论）" % total
+            gaps.append({"from": src_dom, "to": t, "hint": hint, "source": "seed"})
+
+    return {
+        "nodes": nodes,
+        "edges": uniq,
+        "domains": domain_list,
+        "gaps": gaps,
+        "domain_links": links,
+        "gap_source": "seed",
+        "sample": total,
+        "total": total,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  推荐：弱协同缺角 → 具体仓库
+# ═══════════════════════════════════════════════════════════════════
+GAP_SEARCH_KEYWORDS = {
+    "前端/UI": "topic:frontend",
+    "DevOps/云": "topic:devops",
+    "知识/笔记": "topic:note-taking",
+    "数据库": "topic:database",
+    "安全": "topic:security",
+    "数据/可视化": "topic:data-visualization",
+    "移动端": "topic:android",
+    "Web 框架": "topic:web-framework",
+    "AI·LLM": "topic:llm",
+    "CLI/工具": "topic:cli",
+}
+
+RECOMMEND_CACHE = {}
+RECOMMEND_TTL = 3600
+
+
+def _github_headers():
+    h = {"User-Agent": "repo-collector", "Accept": "application/vnd.github+json"}
+    if config.GITHUB_TOKEN:
+        h["Authorization"] = "Bearer " + config.GITHUB_TOKEN
+    return h
+
+
+def search_github(domain):
+    """按领域关键词搜 GitHub 热门仓库（最多 4 个）。外网失败则降级为空列表。"""
+    kw = GAP_SEARCH_KEYWORDS.get(domain)
+    if not kw:
+        return []
+    q = kw + " stars:>500"
+    url = "https://api.github.com/search/repositories?q=" + quote(q) + "&sort=stars&order=desc&per_page=6"
+    try:
+        req = urllib.request.Request(url, headers=_github_headers())
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        out = []
+        for it in data.get("items", []):
+            fn = it.get("full_name") or ""
+            if not fn:
+                continue
+            out.append({
+                "full_name": fn,
+                "url": it.get("html_url"),
+                "description": (it.get("description") or "")[:160],
+                "language": it.get("language"),
+                "stars": it.get("stargazers_count"),
+                "topics": (it.get("topics") or [])[:5],
+            })
+            if len(out) >= 4:
+                break
+        return out
+    except Exception:
+        return []
+
+
+def search_github_cached(domain, owned):
+    """带 TTL 缓存的搜索；返回时按 owned 实时排除已收藏，避免已收的还被推荐。"""
+    t = time.time()
+    if domain in RECOMMEND_CACHE:
+        ts, repos = RECOMMEND_CACHE[domain]
+        if t - ts < RECOMMEND_TTL:
+            return [x for x in repos if x["full_name"].split("/")[-1] not in owned]
+    repos = search_github(domain)
+    RECOMMEND_CACHE[domain] = (t, repos)
+    return [x for x in repos if x["full_name"].split("/")[-1] not in owned]
+
+
+# ===== GitHub 本周涨星 Top 10（独立板块，全局热门，不依赖用户画像）=====
+# GitHub 无公开 trending API，解析 github.com/trending?since=weekly（纯标准库）。
+# 注意：这是 HTML 抓取，GitHub 改版就会失效 —— 所以失败必须优雅降级为空列表，
+# 而不是抛异常或返回半截数据。
+TRENDING_CACHE = {"ts": 0, "data": None}
+TRENDING_TTL = 3600
+
+
+def get_trending_weekly():
+    """抓 GitHub 本周趋势榜，返回前 10。失败降级为空 + ok=False。"""
+    t = time.time()
+    if TRENDING_CACHE["data"] is not None and t - TRENDING_CACHE["ts"] < TRENDING_TTL:
+        return TRENDING_CACHE["data"]
+    try:
+        req = urllib.request.Request(
+            "https://github.com/trending?since=weekly",
+            headers={"User-Agent": "Mozilla/5.0 (repo-collector)"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            html = r.read().decode("utf-8")
+        arts = re.findall(r'<article class="Box-row">(.*?)</article>', html, re.S)
+        out = []
+        for a in arts[:10]:
+            sp = re.search(r'href="/([^"]+)/stargazers"', a)
+            path = sp.group(1) if sp else None
+            if not path:
+                continue
+            stars_m = re.search(r'/stargazers"[^>]*>.*?([\d,]+)\s*</a>', a, re.S)
+            wk_m = re.search(r'([\d,]+)\s+stars this week', a)
+            lang_m = re.search(r'<span itemprop="programmingLanguage">([^<]+)</span>', a)
+            desc_m = re.search(r'<p[^>]*class="col-9[^"]*"[^>]*>(.*?)</p>', a, re.S)
+            desc = re.sub(r'<[^>]+>', '', desc_m.group(1)).strip() if desc_m else ""
+            out.append({
+                "full_name": path,
+                "url": "https://github.com/" + path,
+                "stars": int((stars_m.group(1) or "0").replace(",", "")) if stars_m else 0,
+                "weekly_stars": int((wk_m.group(1) or "0").replace(",", "")) if wk_m else 0,
+                "language": lang_m.group(1) if lang_m else None,
+                "description": desc[:160],
+            })
+        data = {"ok": True, "source": "github-trending-weekly", "repos": out}
+        TRENDING_CACHE["data"] = data
+        TRENDING_CACHE["ts"] = t
+        return data
+    except Exception:
+        return {"ok": False, "source": "github-trending-weekly", "repos": []}
+
+
+def _build_profile_text():
+    """拼一段给人/模型读的画像摘要（领域分布、技术栈、成熟度、动机）。不含行为明细泄露。"""
+    conn = db.connect()
+    c = conn.cursor()
+    lines = []
+    try:
+        c.execute("SELECT value, COUNT(*) FROM repo_axis WHERE axis_key='domain' GROUP BY value ORDER BY COUNT(*) DESC")
+        dom = c.fetchall()
+        if dom:
+            lines.append("已收藏领域：" + "；".join("%s×%d" % (r[0], r[1]) for r in dom))
+        c.execute("SELECT DISTINCT value FROM repo_axis WHERE axis_key='tech' ORDER BY value LIMIT 12")
+        tech = [r[0] for r in c.fetchall()]
+        if tech:
+            lines.append("常用技术栈：" + "、".join(tech))
+        c.execute("SELECT DISTINCT value FROM repo_axis WHERE axis_key='motive' ORDER BY value LIMIT 8")
+        motive = [r[0] for r in c.fetchall()]
+        if motive:
+            lines.append("收藏动机：" + "、".join(motive))
+        c.execute("SELECT COUNT(*) FROM repos")
+        lines.append("收藏总数：%d" % c.fetchone()[0])
+        # 来源分布：主动搜到的 vs 别人推荐来的，是「按需」还是「被投喂」的硬信号
+        c.execute("SELECT COALESCE(source,'manual'), COUNT(*) FROM repos GROUP BY 1 ORDER BY 2 DESC")
+        src_rows = c.fetchall()
+        if src_rows:
+            lines.append("来源分布：" + "、".join("%s×%d" % (r[0], r[1]) for r in src_rows))
+    except Exception:
+        pass
+    conn.close()
+    return "\n".join(lines)
+
+
+def get_recommendations():
+    """弱协同缺角 → 具体仓库推荐。
+
+    两层：
+    1) 语义层（LLM）：基于用户画像推「还想要哪类 + 为什么 + 置信度」，
+       替代写死的共现表；LLM 不可用时回退种子表（并明确标 rule 来源）。
+    2) 真实仓库层：每个目标领域仍走 GitHub 搜索，保证跳转地址真实存在。
+    每条带 based_on / hint / confidence（信用标注，防样本稀疏误导）。
+    """
+    g = get_graph()
+    covered = {d["name"] for d in g["domains"]}
+    owned = {n["name"] for n in g["nodes"]}
+
+    insights = analyze._llm_recommend_insight(_build_profile_text())
+    if insights:
+        target, meta_map = [], {}
+        for ins in insights:
+            if ins["domain"] in covered:
+                continue
+            if ins["domain"] not in target:
+                target.append(ins["domain"])
+            meta_map[ins["domain"]] = ins
+    else:
+        # 回退：冷启动种子表。置信度统一标「低(种子)」—— 它本来就是编者先验，不是行为统计。
+        target, meta_map = [], {}
+        for src, targets in SEED_GAP_COOCCUR.items():
+            if src not in covered:
+                continue
+            for t in targets:
+                if t not in covered:
+                    meta_map.setdefault(t, {"based_on": [], "reason": "", "confidence": "低(种子)"})
+                    meta_map[t]["based_on"].append(src)
+                    if t not in target:
+                        target.append(t)
+        for t in target:
+            if not meta_map[t].get("reason"):
+                bases = meta_map[t].get("based_on", [])
+                meta_map[t]["reason"] = ("你已收藏「" + "、".join(bases) + "」，同类收藏常也关注「" + t + "」") if bases else "通用热门推荐"
+
+    target = target[:4]  # 限速余量
+    results = []
+    for dom in target:
+        repos = search_github_cached(dom, owned)
+        if repos:
+            m = meta_map.get(dom, {})
+            results.append({
+                "domain": dom,
+                "based_on": m.get("based_on", []),
+                "hint": m.get("reason") or "",
+                "confidence": m.get("confidence", "低"),
+                "source": "llm" if insights else "rule",
+                "repos": repos,
+            })
+    return {"recommendations": results, "total": len(results)}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  行为画像（行为层，不并入知识库）
+# ═══════════════════════════════════════════════════════════════════
+def get_profile():
+    """聚合收藏行为 → 行为层画像。优先读 repo_axis（多轴+置信度），回退 card。"""
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id,url,note,status,meta,card,created_at,COALESCE(source,'manual') "
+        "FROM repos ORDER BY id"
+    )
+    rows = c.fetchall()
+    c.execute("SELECT repo_id, axis_key, value FROM repo_axis")
+    axis_rows = c.fetchall()
+    gaps = get_graph()["gaps"]
+    conn.close()
+
+    axis_dom, axis_tech, axis_motive = {}, {}, {}
+    for rid, ak, val in axis_rows:
+        if ak == "domain":
+            axis_dom[rid] = val
+        elif ak == "tech":
+            axis_tech.setdefault(rid, []).append(val)
+        elif ak == "motive":
+            axis_motive[rid] = val
+
+    total = len(rows)
+    domains, techs, maturity = {}, {}, {}
+    timeline_days, timeline_hours = {}, {}
+    notes_with_src = 0
+    from_recommend = 0
+    sources = {}
+    carded = 0
+    motive_dist = {}
+
+    for rid, url, note, status, rmeta_s, rcard_s, created_at, src in rows:
+        try:
+            card = json.loads(rcard_s) if rcard_s else None
+        except Exception:
+            card = None
+        if card:
+            carded += 1
+        dom = axis_dom.get(rid) or (card.get("domain", "未分类") if card else "未分类")
+        domains[dom] = domains.get(dom, 0) + 1
+        ts = axis_tech.get(rid) or (card.get("tech_stack") or [] if card else [])
+        for t in ts:
+            techs[t] = techs.get(t, 0) + 1
+        mat = (card.get("maturity", "未评估") if card else "未评估")
+        maturity[mat] = maturity.get(mat, 0) + 1
+        mv = axis_motive.get(rid)
+        if mv:
+            motive_dist[mv] = motive_dist.get(mv, 0) + 1
+        if created_at:
+            day = created_at[:10]
+            timeline_days[day] = timeline_days.get(day, 0) + 1
+            try:
+                hh = int(created_at[11:13])
+            except Exception:
+                hh = -1
+            if hh >= 0:
+                timeline_hours[hh] = timeline_hours.get(hh, 0) + 1
+        if note:
+            notes_with_src += 1
+        # 来源：读字段，不再靠 grep 备注里的中文（旧实现永远为 0）
+        src = src or "manual"
+        sources[src] = sources.get(src, 0) + 1
+        if src == "recommend":
+            from_recommend += 1
+
+    domain_list = sorted(
+        [{"name": k, "count": v} for k, v in domains.items()], key=lambda x: -x["count"])
+    # 注意：这里给前端的是完整列表，词数由 len 决定；截断只发生在展示层
+    tech_list = sorted(
+        [{"name": k, "count": v} for k, v in techs.items()], key=lambda x: -x["count"])
+    maturity_list = [{"name": k, "count": v} for k, v in sorted(maturity.items(), key=lambda x: -x[1])]
+    day_list = sorted(timeline_days.items())
+    slots = {"凌晨 0-6": 0, "上午 6-12": 0, "下午 12-18": 0, "晚上 18-24": 0}
+    for h, n in timeline_hours.items():
+        if h < 6:
+            slots["凌晨 0-6"] += n
+        elif h < 12:
+            slots["上午 6-12"] += n
+        elif h < 18:
+            slots["下午 12-18"] += n
+        else:
+            slots["晚上 18-24"] += n
+    span = None
+    if day_list:
+        try:
+            d0 = datetime.date.fromisoformat(day_list[0][0])
+            d1 = datetime.date.fromisoformat(day_list[-1][0])
+            span = {"first": day_list[0][0], "last": day_list[-1][0],
+                    "days": max(1, (d1 - d0).days + 1)}
+        except Exception:
+            span = None
+
+    return {
+        "total": total,
+        "carded": carded,
+        "domains": domain_list,
+        "techs": tech_list,
+        "techs_top": tech_list[:12],
+        "maturity": maturity_list,
+        "motive_dist": motive_dist,
+        "sources": sources,
+        "timeline_days": [{"date": d, "count": n} for d, n in day_list],
+        "active_slots": slots,
+        "notes_with_src": notes_with_src,
+        "from_recommend": from_recommend,
+        "gaps": gaps,
+        "span": span,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  检索
+# ═══════════════════════════════════════════════════════════════════
+def query_axes(filters, conn=None):
+    """跨轴交叉检索：filters = [("axis_key","value"), ...]，全部 AND。"""
+    own = conn is None
+    conn = conn or db.connect()
+    c = conn.cursor()
+    if not filters:
+        c.execute("SELECT id FROM repos")
+        ids = {r[0] for r in c.fetchall()}
+        if own:
+            conn.close()
+        return ids
+    result = None
+    for axis_key, value in filters:
+        c.execute("SELECT repo_id FROM repo_axis WHERE axis_key=? AND value=?", (axis_key, value))
+        s = {r[0] for r in c.fetchall()}
+        result = s if result is None else (result & s)
+    if own:
+        conn.close()
+    return result if result is not None else set()
+
+
+def get_cards(filters, conn=None):
+    """多维卡片筛选。组合语义：同层 OR，跨层 AND；q 走全文模糊。"""
+    own = conn is None
+    conn = conn or db.connect()
+    c = conn.cursor()
+    c.execute("SELECT id,url,note,status,meta,card,created_at FROM repos ORDER BY id DESC")
+    rows = c.fetchall()
+    c.execute("SELECT repo_id, axis_key, value FROM repo_axis")
+    axis_rows = c.fetchall()
+    if own:
+        conn.close()
+
+    axes_by_repo = {}
+    for rid, ak, val in axis_rows:
+        axes_by_repo.setdefault(rid, {}).setdefault(ak, []).append(val)
+
+    def match_layer(rid, axis_key, wanted):
+        if not wanted:
+            return True
+        have = axes_by_repo.get(rid, {}).get(axis_key, [])
+        return any(w in have for w in wanted)
+
+    def match_q(it, q):
+        q = q.lower()
+        hay = [
+            it["url"], it["note"] or "",
+            (it["meta"] or {}).get("name") or "",
+            (it["meta"] or {}).get("description") or "",
+            (it["card"] or {}).get("domain") or "",
+            (it["card"] or {}).get("why_needed") or "",
+        ]
+        if it["card"] and it["card"].get("tags"):
+            hay += it["card"]["tags"]
+        return q in " ".join(hay).lower()
+
+    items = []
+    for r in rows:
+        try:
+            meta = json.loads(r[4]) if r[4] else None
+            card = json.loads(r[5]) if r[5] else None
+        except Exception:
+            meta, card = None, None
+        it = {"id": r[0], "url": r[1], "note": r[2], "status": r[3],
+              "meta": meta, "card": card, "created_at": r[6]}
+        if not match_layer(it["id"], "domain", filters.get("domain", [])):
+            continue
+        if not match_layer(it["id"], "tech", filters.get("tech", [])):
+            continue
+        if not match_layer(it["id"], "motive", filters.get("motive", [])):
+            continue
+        if filters.get("q") and not match_q(it, filters["q"]):
+            continue
+        items.append(it)
+
+    sort = filters.get("sort", "")
+    if sort == "stars":
+        def stars_of(it):
+            try:
+                return int((it["meta"] or {}).get("stars") or 0)
+            except Exception:
+                return 0
+        items.sort(key=stars_of, reverse=True)
+    elif sort == "rec":
+        def rec_of(it):
+            try:
+                return int((it["card"] or {}).get("recommendation") or 0)
+            except Exception:
+                return 0
+        items.sort(key=rec_of, reverse=True)
+    return items
+
+
+def get_axis_facets():
+    """列出各轴的取值分布（供前端做分面筛选）。带 source / confidence 聚合。"""
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute(
+        "SELECT axis_key, value, COUNT(*) AS n, AVG(confidence) AS conf "
+        "FROM repo_axis GROUP BY axis_key, value ORDER BY axis_key, n DESC"
+    )
+    rows = c.fetchall()
+    conn.close()
+    facets = {}
+    for axis_key, value, n, conf in rows:
+        facets.setdefault(axis_key, []).append(
+            {"value": value, "count": n, "confidence": round(conf or 0, 2)})
+    return facets
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  采集与写入
+# ═══════════════════════════════════════════════════════════════════
+def valid_repo_url(url):
+    try:
+        p = urlparse(url)
+    except Exception:
+        return None
+    if p.scheme not in ("http", "https"):
+        return None
+    host = (p.netloc or "").lower().split(":")[0]
+    if host == "github.com":
+        segs = [s for s in p.path.split("/") if s]
+        if len(segs) >= 2:
+            return ("github", "/" + "/".join(segs[:2]))
+    if host.endswith("gitlab.com"):
+        segs = [s for s in p.path.split("/") if s]
+        if len(segs) >= 2:
+            return ("gitlab", "/" + "/".join(segs[:2]))
+    return None
+
+
+def esc_html(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
+
+
+# URL 候选：只吃 ASCII 可见字符。
+# 为什么不能写成 [^\s"'<>]+：中文写作里链接后面常常直接跟汉字（「推荐https://github.com/a/b很好用」），
+# 非空白类会把汉字一并吞进 URL，存进去就是个坏地址 —— 而「从分享的文字里抽链接」
+# 恰恰是本产品最主要的入口场景。限定 ASCII 后，汉字天然成为终止符。
+REPO_URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
+
+
+def extract_repo_url(text):
+    """从一段文字里抽第一个合法仓库地址（微信转发 / 系统分享场景）。"""
+    if not text:
+        return None
+    for m in REPO_URL_RE.findall(text):
+        u = m.rstrip(r""".,;:!?)'\]}>。，；：、""")
+        if valid_repo_url(u):
+            return u
+    return None
+
+
+def fetch_github_meta(path):
+    api = "https://api.github.com/repos/" + path.strip("/")
+    try:
+        req = urllib.request.Request(api, headers=_github_headers())
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return {
+            "name": data.get("full_name"),
+            "description": data.get("description"),
+            "language": data.get("language"),
+            "stars": data.get("stargazers_count"),
+            "topics": data.get("topics"),
+            "homepage": data.get("homepage"),
+            "pushed_at": data.get("pushed_at"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def sync_axes(conn, rid, card, note, meta, use_llm=True):
+    """把卡片 + 备注同步写入多轴表（repo_axis / tags）。多维存储的唯一落点。
+
+    来源与置信度跟随 card["source"]：LLM 分析出的领域，不该在轴表里被记成
+    「启发式 0.6」—— 那会让前端费力区分的「AI 分析 / 规则预览」在下游丢失，
+    也让 confidence 字段彻底不可信。
+
+    这是「全量重建」语义（先 DELETE 再写）。因此任何改写 card 的路径都必须
+    紧跟一次本调用，否则卡片与轴表分叉（P0-1 的根因）。
+
+    use_llm=False：批量重建时用，跳过 LLM 提炼，保证重建快且确定。
+    """
+    c = conn.cursor()
+    is_llm = (card or {}).get("source") == "llm"
+    src, conf = ("llm", 0.85) if is_llm else ("heuristic", 0.6)
+    c.execute("DELETE FROM repo_axis WHERE repo_id=?", (rid,))
+    c.execute("DELETE FROM tags WHERE repo_id=?", (rid,))
+
+    def put(axis_key, value, weight, source, confidence):
+        if not value:
+            return
+        c.execute(
+            "INSERT OR REPLACE INTO repo_axis (repo_id,axis_key,value,weight,source,confidence) "
+            "VALUES (?,?,?,?,?,?)",
+            (rid, axis_key, value, weight, source, confidence),
+        )
+
+    domain = (card or {}).get("domain")
+    if domain and domain != "未分类":
+        put("domain", domain, 1.0, src, conf)
+    for i, t in enumerate((card or {}).get("tech_stack", [])[:6]):
+        put("tech", t, round(0.5 - i * 0.05, 2), src, max(0.3, round(conf - 0.1, 2)))
+    maturity = (card or {}).get("maturity")
+    if maturity:
+        put("timeline", maturity, 1.0, src, max(0.3, round(conf - 0.1, 2)))
+
+    if note:
+        nl_axes = analyze._llm_note_axes(note, meta) if use_llm else None
+        if nl_axes and (nl_axes.get("motive") or nl_axes.get("scene")):
+            if nl_axes.get("motive"):
+                put("motive", nl_axes["motive"], 1.0, "user", 1.0)
+            if nl_axes.get("scene"):
+                put("scene", nl_axes["scene"], 1.0, "user", 0.9)
+        else:
+            put("motive", "主动寻找", 1.0, "user", 1.0)
+            nl = note.lower()
+            if any(k in nl for k in ["学习", "入门", "教程", "了解"]):
+                put("scene", "学习研究", 1.0, "user", 0.9)
+            elif any(k in nl for k in ["做", "项目", "搭", "开发", "自己的"]):
+                put("scene", "做项目", 1.0, "user", 0.9)
+            elif any(k in nl for k in ["灵感", "参考", "想法", "思路"]):
+                put("scene", "找灵感", 1.0, "user", 0.9)
+            else:
+                put("scene", "临时调研", 1.0, "user", 0.9)
+    else:
+        put("motive", "随手刷到", 1.0, "user", 0.9)
+    for t in (card or {}).get("tags", []):
+        c.execute("INSERT OR IGNORE INTO tags (repo_id, tag) VALUES (?, ?)", (rid, t))
+    conn.commit()
+
+
+def worker(item_id, url, note, kind, path, source="manual"):
+    """后台异步：拉取元数据 → 生成多维分析卡片 → 落库 → 同步轴表。"""
+    meta = fetch_github_meta(path) if kind == "github" else {"note": "gitlab meta 暂未拉取"}
+    conn = db.connect()
+    c = conn.cursor()
+    card = analyze.build_card(meta, note, item_id, conn)
+    status = "carded" if "error" not in meta else "pending_meta"
+    c.execute("UPDATE repos SET meta=?, card=?, status=? WHERE id=?",
+              (json.dumps(meta, ensure_ascii=False),
+               json.dumps(card, ensure_ascii=False), status, item_id))
+    sync_axes(conn, item_id, card, note, meta)   # worker 与 regenerate 共用同一落点
+    conn.commit()
+    conn.close()
+
+
+def collect_payload(url, note, source="manual"):
+    """校验 → 查重 → 同步落库 → 后台出卡。GET / POST 共用。返回 (http_code, body)。"""
+    url = (url or "").strip()
+    note = (note or "").strip()
+    source = source if source in SOURCES else "manual"
+    kind_path = valid_repo_url(url)
+    if not kind_path:
+        return (400, {"ok": False, "error": "仅支持 GitHub / GitLab 仓库地址"})
+    kind, path = kind_path
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute("SELECT id,status FROM repos WHERE url=?", (url,))
+    existing = c.fetchone()
+    if existing:
+        conn.close()
+        return (200, {"ok": True, "id": existing[0], "status": existing[1], "dup": True})
+    c.execute("INSERT INTO repos (url,note,status,created_at,source) VALUES (?,?,?,?,?)",
+              (url, note, "queued", now(), source))
+    item_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    threading.Thread(target=worker, args=(item_id, url, note, kind, path, source),
+                     daemon=True).start()
+    return (200, {"ok": True, "id": item_id, "status": "queued", "source": source})
+
+
+def regenerate_card(rid, timeout=None):
+    """重算某仓库卡片。返回 (http_code, body)。
+
+    抽成模块级函数（而非埋在 Handler 里）有两个理由：
+    1. 可被测试直接调用 —— 这样「重算后轴表必须与卡片一致」才写得出回归测试；
+    2. 更新卡片与同步轴表必须写在一起，分开放就一定有人漏（P0-1 就是这么来的）。
+    """
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute("SELECT url,note,meta,card FROM repos WHERE id=?", (rid,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return (404, {"ok": False, "error": "not found"})
+    url, note, meta_s, card_s = row[0], row[1], row[2], row[3]
+    try:
+        meta = json.loads(meta_s) if meta_s else {}
+    except Exception:
+        meta = {}
+    try:
+        old_card = json.loads(card_s) if card_s else None
+    except Exception:
+        old_card = None
+
+    budget = config.LLM_TIMEOUT_FAST if timeout is None else timeout
+    card = analyze.build_card(meta, note, rid, conn, timeout=budget)
+    # 重算保护：本次回退到启发式、而原卡是 LLM 分析，则不覆盖原卡
+    fallback = (card.get("source") != "llm") and bool(old_card and old_card.get("source") == "llm")
+    if fallback:
+        conn.close()
+        return (200, {"ok": True, "card": old_card, "unchanged": True,
+                      "reason": "llm_unavailable"})
+    c.execute("UPDATE repos SET card=?, status='carded' WHERE id=?",
+              (json.dumps(card, ensure_ascii=False), rid))
+    sync_axes(conn, rid, card, note, meta)   # ← P0-1 修复点：卡片与轴表同批更新
+    conn.commit()
+    conn.close()
+    return (200, {"ok": True, "card": card})
+
+
+def delete_item(rid):
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute("SELECT id FROM repos WHERE id=?", (rid,))
+    if not c.fetchone():
+        conn.close()
+        return (404, {"ok": False, "error": "not found"})
+    c.execute("DELETE FROM repo_axis WHERE repo_id=?", (rid,))
+    c.execute("DELETE FROM tags WHERE repo_id=?", (rid,))
+    c.execute("DELETE FROM repos WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+    return (200, {"ok": True, "id": rid})
+
+
+def reindex_axes():
+    """从卡片重建全部多轴数据，返回处理条数。
+
+    这是「卡片是真源、轴表是派生物」这条契约的可执行版本：
+    只要对一致性有任何怀疑，跑一次它就归位（不调 LLM，快且确定）。
+    """
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute("SELECT id, note, meta, card FROM repos WHERE card IS NOT NULL")
+    rows = c.fetchall()
+    n = 0
+    for rid, note, meta_s, card_s in rows:
+        try:
+            card = json.loads(card_s) if card_s else None
+            meta = json.loads(meta_s) if meta_s else {}
+        except Exception:
+            continue
+        if not card:
+            continue
+        sync_axes(conn, rid, card, note, meta, use_llm=False)
+        n += 1
+    conn.commit()
+    conn.close()
+    return n
+
+
+def doctor():
+    """自检：这个项目也对自己照一次镜子。
+
+    报告卡片/轴表不一致条数、LLM 可用性、样本量、DB 状态与生效配置（脱敏）。
+    """
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute("SELECT id, url, card FROM repos")
+    rows = c.fetchall()
+    mismatches = []
+    no_axis = []
+    for rid, url, card_s in rows:
+        try:
+            card = json.loads(card_s) if card_s else None
+        except Exception:
+            card = None
+        c.execute("SELECT value FROM repo_axis WHERE repo_id=? AND axis_key='domain'", (rid,))
+        axis_dom = (c.fetchone() or [None])[0]
+        if not card:
+            continue
+        if not axis_dom and card.get("domain"):
+            no_axis.append({"id": rid, "url": url})
+            continue
+        if (card.get("domain") or "未分类") != (axis_dom or "未分类"):
+            mismatches.append({"id": rid, "url": url, "card": card.get("domain"), "axis": axis_dom})
+    try:
+        journal = c.execute("PRAGMA journal_mode").fetchone()[0]
+        freelist = c.execute("PRAGMA freelist_count").fetchone()[0]
+    except Exception:
+        journal, freelist = "?", 0
+    conn.close()
+
+    try:
+        size = os.path.getsize(config.DB)
+    except Exception:
+        size = 0
+
+    return {
+        "ok": not mismatches and not no_axis,
+        "cards": len(rows),
+        "axis_mismatch": mismatches,
+        "axis_missing": no_axis,
+        "llm": analyze.llm_status(),
+        "db": {
+            "path": config.DB, "schema_version": db.SCHEMA_VERSION,
+            "journal_mode": journal, "freelist": freelist, "size": size,
+        },
+        "config": config.summary(),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  静态文件
+# ═══════════════════════════════════════════════════════════════════
+def resolve_static(rel):
+    """把 URL 路径解析成 web/ 下的真实文件；越界或不存在返回 None。
+
+    改造前这里是一串硬编码文件名白名单，加一个页面就得改后端。
+    改成目录级 serve，保留路径穿越校验（normpath 后必须仍在 web/ 内）。
+    """
+    rel = (rel or "").lstrip("/")
+    if not rel:
+        return None
+    # 先解码再规范化：否则 /%2e%2e/ 这类编码过的穿越会绕过 startswith 检查
+    full = os.path.normpath(os.path.join(WEB_DIR, unquote(rel)))
+    if full != WEB_DIR and not full.startswith(WEB_DIR + os.sep):
+        return None
+    if not os.path.isfile(full):
+        return None
+    return full
+
+
+COLLECT_RESULT_TPL = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#FBFAF7">
+<title>收藏箱 · 收藏</title><style>
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+background:#FBFAF7;color:#23201B;max-width:420px;margin:0 auto;padding:56px 22px;text-align:center}
+.t{font-size:22px;font-weight:600;margin-bottom:10px}
+.m{font-size:14px;color:#6B655C;line-height:1.7}
+.u{font-size:12px;color:#9A938A;word-break:break-all;margin:16px 0}
+a{display:inline-block;margin:10px 6px;font-size:14px;color:#B5673E;
+text-decoration:none;border:1px solid rgba(181,103,62,.34);border-radius:8px;padding:7px 18px}
+</style></head><body>
+<div class="t">%(title)s</div>
+<div class="m">%(msg)s</div>
+%(url)s
+<div><a href="/">继续收藏</a><a href="/cards.html">看卡片</a></div>
+</body></html>"""
+
+
+def render_collect_result(code, body, url):
+    """深链 / 移动端结果页。从 Handler 里独立出来，便于统一转义与复用。"""
+    ok, dup = body.get("ok"), body.get("dup")
+    if ok and dup:
+        title, msg = "已在收藏", "这个仓库之前收过了，没有重复添加。"
+    elif ok:
+        title, msg = "已收藏", "仓库已加入收集队列，后台正在生成分析卡片。"
+    else:
+        title, msg = "未能收藏", (body.get("error") or "地址无效，请检查后重试。")
+    return COLLECT_RESULT_TPL % {
+        "title": esc_html(title),
+        "msg": esc_html(msg),
+        "url": ('<div class="u">' + esc_html(url) + "</div>") if url else "",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  HTTP 层
+# ═══════════════════════════════════════════════════════════════════
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    # ---------- 基础设施 ----------
+    def _send(self, code, body, ctype="application/json"):
+        if isinstance(body, (dict, list)):
+            body = json.dumps(body, ensure_ascii=False)
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype + "; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_file(self, full, ctype):
+        with open(full, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype + "; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _read_json(self):
+        """读 JSON body。返回 (payload, err_code)。超限 413，坏 JSON 400。"""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > config.MAX_BODY:
+            return None, 413
+        raw = self.rfile.read(length) if length > 0 else b""
+        try:
+            obj = json.loads(raw.decode("utf-8") or "{}")
+        except Exception:
+            return None, 400
+        return (obj if isinstance(obj, dict) else {}), 200
+
+    def _token_ok(self):
+        """可选口令校验。未配置 TOKEN 时恒通过（本机自用默认）。"""
+        if not config.TOKEN:
+            return True
+        sent = self.headers.get("X-Collector-Token") or ""
+        if not sent:
+            qs = parse_qs(urlparse(self.path).query)
+            sent = qs.get("k", [""])[0] or ""
+        return hmac.compare_digest(sent, config.TOKEN)
+
+    def _origin_local(self):
+        """跨源写守卫：只挡破坏性/非幂等操作（删除、重算）。
+
+        为什么不挡 POST /collect：它的设计前提就是「任意页面都能投递」
+        —— 书签工具跑在 github.com 上，悬浮球会被嵌进第三方页面。
+        全局同源白名单会把这两个入口直接打死，所以只守删除与重算。
+        """
+        origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
+        if not origin:
+            return True          # 无 Origin：curl / 原生壳 / 系统分享，都是可信本机来源
+        host = (urlparse(origin).hostname or "").lower()
+        return host in config.ALLOW_ORIGIN_HOSTS
+
+    def _write_guard(self, same_origin_required):
+        """返回 None 表示放行，否则返回错误响应元组。"""
+        if not self._token_ok():
+            return (401, {"ok": False, "error": "缺少或错误的口令（X-Collector-Token）"})
+        if same_origin_required and not self._origin_local():
+            return (403, {"ok": False, "error": "拒绝跨源写操作"})
+        return None
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS,DELETE")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type,X-Collector-Token")
+        self.end_headers()
+
+    # ---------- GET ----------
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+
+        if path in ("/", "/index.html"):
+            self._serve_file(os.path.join(WEB_DIR, "collect.html"), "text/html")
+            return
+        if path == "/collect":
+            # 分享深链：从系统分享 / 二维码 / 短信打开即收藏（移动友好结果页）
+            if not self._token_ok():
+                self._send(401, {"ok": False, "error": "缺少或错误的口令"})
+                return
+            url = (qs.get("url", [""])[0] or "").strip()
+            note = (qs.get("note", [""])[0] or "").strip()
+            source = (qs.get("source", [""])[0] or "").strip() or "share"
+            if not url:
+                txt = (qs.get("text", [""])[0] or "").strip()
+                if txt:
+                    url = extract_repo_url(txt) or ""
+                    if not note:
+                        note = txt
+            code, body = collect_payload(url, note, source)
+            self._send(code, render_collect_result(code, body, url), "text/html")
+            return
+        if path == "/health":
+            self._send(200, {"ok": True})
+            return
+        if path.startswith("/api/"):
+            self._api_get(path, qs)
+            return
+        # 静态：目录级 serve（web/ 下任何文件都可访问，越界与不存在均 404）
+        full = resolve_static(path)
+        if full:
+            ext = os.path.splitext(full)[1].lower()
+            self._serve_file(full, CTYPES.get(ext, "application/octet-stream"))
+        else:
+            self._send(404, {"error": "not found"})
+
+    def _api_get(self, path, qs):
+        if not self._token_ok():
+            self._send(401, {"ok": False, "error": "缺少或错误的口令"})
+            return
+        if path == "/api/items":
+            self._send(200, self._items(qs.get("q", [""])[0]))
+        elif path == "/api/cards":
+            items = get_cards({
+                "domain": qs.get("domain", []), "tech": qs.get("tech", []),
+                "motive": qs.get("motive", []),
+                "q": (qs.get("q", [""])[0] or "").strip(),
+                "sort": (qs.get("sort", [""])[0] or "").strip(),
+            })
+            self._send(200, {"count": len(items), "items": items})
+        elif path == "/api/facets":
+            f = get_axis_facets()
+            visible = {k: f[k] for k in ("domain", "tech", "motive") if k in f and f[k]}
+            self._send(200, visible)
+        elif path == "/api/query":
+            axes, values = qs.get("axis", []), qs.get("value", [])
+            filters = [(axes[i], values[i]) for i in range(min(len(axes), len(values)))]
+            ids = query_axes(filters)
+            rows = []
+            if ids:
+                conn = db.connect()
+                cc = conn.cursor()
+                cc.execute("SELECT id,url,note,meta,card FROM repos WHERE id IN (%s)"
+                           % ",".join("?" * len(ids)), list(ids))
+                rows = cc.fetchall()
+                conn.close()
+            items = []
+            for r in rows:
+                try:
+                    meta = json.loads(r[3]) if r[3] else None
+                    card = json.loads(r[4]) if r[4] else None
+                except Exception:
+                    meta, card = None, None
+                items.append({"id": r[0], "url": r[1], "note": r[2], "meta": meta, "card": card})
+            self._send(200, {"filters": filters, "count": len(items), "items": items})
+        elif path == "/api/graph":
+            self._send(200, get_graph())
+        elif path == "/api/recommend":
+            self._send(200, get_recommendations())
+        elif path == "/api/trending":
+            self._send(200, get_trending_weekly())
+        elif path == "/api/profile":
+            self._send(200, get_profile())
+        elif path == "/api/doctor":
+            self._send(200, doctor())
+        else:
+            self._send(404, {"error": "not found"})
+
+    @staticmethod
+    def _items(q):
+        conn = db.connect()
+        c = conn.cursor()
+        if q:
+            like = "%" + q + "%"
+            c.execute(
+                """SELECT id,url,note,status,meta,card,created_at FROM repos
+                   WHERE url LIKE ? OR note LIKE ? OR meta LIKE ? OR card LIKE ?
+                   ORDER BY id DESC LIMIT 50""", (like, like, like, like))
+        else:
+            c.execute("SELECT id,url,note,status,meta,card,created_at FROM repos "
+                      "ORDER BY id DESC LIMIT 50")
+        rows = c.fetchall()
+        conn.close()
+        items = []
+        for r in rows:
+            try:
+                meta = json.loads(r[4]) if r[4] else None
+                card = json.loads(r[5]) if r[5] else None
+            except Exception:
+                meta, card = None, None
+            items.append({"id": r[0], "url": r[1], "note": r[2], "status": r[3],
+                          "meta": meta, "card": card, "created_at": r[6]})
+        return {"items": items, "q": q}
+
+    # ---------- POST ----------
+    def do_POST(self):
+        p = self.path.rstrip("/")
+        if p == "/api/card/regenerate":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            payload, err = self._read_json()
+            if err != 200:
+                self._send(err, {"ok": False, "error": "bad json" if err == 400 else "body too large"})
+                return
+            rid = payload.get("id")
+            if not rid:
+                self._send(400, {"ok": False, "error": "need id"})
+                return
+            try:
+                rid = int(rid)
+            except (TypeError, ValueError):
+                self._send(400, {"ok": False, "error": "bad id"})
+                return
+            self._send(*regenerate_card(rid))
+            return
+        if p == "/api/reindex":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            n = reindex_axes()
+            self._send(200, {"ok": True, "rebuild": n})
+            return
+        if p != "/collect":
+            self._send(404, {"error": "not found"})
+            return
+        # 收藏入口：不设同源限制（书签 / 悬浮球 / 深链都从外部页面投递）
+        if not self._token_ok():
+            self._send(401, {"ok": False, "error": "缺少或错误的口令"})
+            return
+        payload, err = self._read_json()
+        if err != 200:
+            self._send(err, {"ok": False, "error": "bad json" if err == 400 else "body too large"})
+            return
+        url = (payload.get("url") or "").strip()
+        note = (payload.get("note") or "").strip()
+        source = (payload.get("source") or "").strip()
+        text = (payload.get("text") or "").strip()
+        if not url and text:
+            url = extract_repo_url(text) or ""
+            if not note:
+                note = (text.replace(url, "").strip()[:200]) if url else text[:200]
+        if not url:
+            self._send(400, {"ok": False, "error": "请提供仓库地址，或在 text 中附上链接"})
+            return
+        self._send(*collect_payload(url, note, source))
+
+    # ---------- DELETE ----------
+    def do_DELETE(self):
+        p = self.path.rstrip("/")
+        if p.startswith("/api/item/"):
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            try:
+                rid = int(p.split("/")[-1])
+            except Exception:
+                self._send(400, {"ok": False, "error": "bad id"})
+                return
+            self._send(*delete_item(rid))
+            return
+        self._send(404, {"error": "not found"})
+
+    def log_message(self, *a):
+        pass
+
+
+def main():
+    init_db()
+    print("repo collector on http://%s:%d  (db=%s)" % (config.HOST, config.PORT, config.DB))
+    print("  页面：/  /cards.html  /map.html  /recommend.html  /profile.html  /share.html")
+    print("  自检：/api/doctor")
+    if config.TOKEN:
+        print("  口令：已启用（写操作需 X-Collector-Token）")
+    if not config.GITHUB_TOKEN:
+        print("  提示：未配置 REPO_GITHUB_TOKEN，GitHub 搜索限速 10 次/分")
+    ThreadingHTTPServer((config.HOST, config.PORT), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

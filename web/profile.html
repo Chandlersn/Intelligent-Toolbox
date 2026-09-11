@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#FBFAF7">
+<title>收藏箱 · 行为画像</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  body{max-width:560px;margin:0 auto;padding:env(safe-area-inset-top) 16px calc(28px + env(safe-area-inset-bottom))}
+  header p{margin:6px 0 0}
+  /* 去掉板块标题前的竖线装饰（仅本页） */
+  .sec-h::before{display:none}
+  .sec-h{margin-bottom:6px}
+  /* 可钻取元素（点一下跳卡片页对应筛选） */
+  .jp{cursor:pointer}
+  .jp:hover{filter:brightness(.97)}
+  .chips .chip.jp:hover{background:var(--accent-line); color:var(--accent)}
+  .gap.jp:hover{border-color:var(--accent-line)}
+  /* 概览卡片内网格 */
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .stat{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);padding:13px 8px;text-align:center}
+  .stat .n{font-size:22px;font-weight:600;color:var(--accent);font-family:var(--mono);line-height:1.1}
+  .stat .l{font-size:12px;color:var(--muted);margin-top:5px}
+  /* 数据条行（复用 theme .bar，仅布局） */
+  .row{display:flex;align-items:center;gap:10px;margin:9px 0;font-size:13px}
+  .row .k{width:88px;flex:none;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color .15s var(--ease)}
+  .row .bar{height:14px}
+  .row .v{width:30px;flex:none;text-align:right;color:var(--muted);font-family:var(--mono);transition:color .15s var(--ease)}
+  .row:hover .k,.row:hover .v{color:var(--accent)}
+  .row:hover .bar i{background:var(--accent-2)}
+  /* 时间线 */
+  .tl{display:flex;align-items:flex-end;gap:3px;height:64px;padding-top:6px}
+  .tl .c{flex:1;border-radius:3px 3px 0 0;min-height:3px;transition:background .15s var(--ease)}
+  .tl .c:hover{background:var(--accent)}
+  .tl-x{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:5px}
+  /* 时段条 */
+  .slot{display:flex;align-items:center;gap:10px;margin:9px 0;font-size:13px}
+  .slot .k{width:76px;flex:none;color:var(--ink);transition:color .15s var(--ease)}
+  .slot .bar{height:14px;transition:background .15s var(--ease)}
+  .slot .v{width:30px;flex:none;text-align:right;color:var(--muted);font-family:var(--mono);transition:color .15s var(--ease)}
+  .slot:hover .k,.slot:hover .v{color:var(--accent)}
+  .slot:hover .bar i{background:var(--accent-2)}
+  /* 缺角观察条目 */
+  .gap{background:var(--surface-2);border:1px dashed var(--line);border-radius:var(--r);
+    padding:11px 13px;margin:8px 0;font-size:13px}
+  .gap .t{color:var(--accent);font-weight:600;font-size:13px}
+  .gap .h{color:var(--muted);font-size:12px;margin-top:4px;line-height:1.5}
+  footer{font-size:11px;color:var(--faint);text-align:center;margin-top:14px}
+</style>
+</head>
+<body data-nav="profile">
+<header>
+  <h1>收藏箱 · 行为画像</h1>
+  <p>这是你自己的「认知镜子」——只照你实际动手收藏了什么，不抽象、不整理，比知识库更靠近真实行动。</p>
+</header>
+
+<section class="card">
+  <div class="sec-h">概览</div>
+  <div class="sec-note">你收藏行为的整体计数。注意：这是「做了什么」，不是「懂了什么」。</div>
+  <div class="stats" id="stats"></div>
+</section>
+
+<section class="card">
+  <div class="sec-h">你动手多的领域</div>
+  <div class="sec-note">按收藏仓库数量分桶。密集区 = 你反复用行动投票的方向。</div>
+  <div id="domains"></div>
+</section>
+
+<section class="card">
+  <div class="sec-h">你实际在用的技术栈</div>
+  <div class="sec-note">从卡片 tech_stack 聚合。反映你的手，不是你的口。</div>
+  <div class="chips" id="techs"></div>
+</section>
+
+<section class="card">
+  <div class="sec-h">收藏仓库的量级</div>
+  <div class="sec-note">按星标数与更新活跃度分桶：顶级（2 万星以上）、成熟、活跃、新兴。这是项目的江湖地位，不等于你用得多。</div>
+  <div class="mat" id="maturity"></div>
+</section>
+
+<section class="card">
+  <div class="sec-h">它是怎么进来的</div>
+  <div class="sec-note">自己找的，还是别人推给你的。这个比例比动机硬——不用你回忆，是记录出来的。</div>
+  <div class="chips" id="sources"></div>
+</section>
+
+<section class="card">
+  <div class="sec-h">你是怎么收的</div>
+  <div class="sec-note">主动寻找 = 你带着目的去搜；随手刷到 = 刷视频/信息流时顺手收。比例能看出是「按需」还是「被投喂」。</div>
+  <div class="chips" id="motive"></div>
+</section>
+
+<section class="card">
+  <div class="sec-h">收藏行为时间线</div>
+  <div class="sec-note" id="span-note"></div>
+  <div class="tl" id="timeline"></div>
+  <div class="tl-x"><span id="tl-a"></span><span id="tl-b"></span></div>
+</section>
+
+<section class="card">
+  <div class="sec-h">你常在什么时段动手</div>
+  <div class="sec-note">按收藏发生的时间段分布的活跃度。</div>
+  <div id="slots"></div>
+</section>
+
+<section class="card">
+  <div class="sec-h">行为上的缺角（弱观察）</div>
+  <div class="sec-note">仅基于「你收了 A，同类常也收 B」的弱协同。是观察，不是结论，更不进知识库。</div>
+  <div id="gaps"></div>
+</section>
+
+<footer>智能收藏箱 · 行为层独立画像</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+async function load(){
+  let p;
+  try { p = await (await fetch('/api/profile')).json(); }
+  catch(e){ $('stats').innerHTML = '<div class="empty">加载失败，请确认服务在运行。</div>'; return; }
+
+  // 概览
+  const stats = [
+    ['收藏总数', p.total],
+    ['已出卡片', p.carded],
+    ['带备注', p.notes_with_src],
+    ['来自推荐', p.from_recommend],
+    ['覆盖领域', p.domains.length],
+    ['技术领域', p.techs.length],
+  ];
+  $('stats').innerHTML = stats.map(s => '<div class="stat"><div class="n">'+s[1]+'</div><div class="l">'+s[0]+'</div></div>').join('');
+
+  // 领域密度（整行可点，钻取到卡片页按领域筛选）
+  const dmax = Math.max(1, ...p.domains.map(d => d.count));
+  $('domains').innerHTML = p.domains.length ? p.domains.map(d =>
+    '<div class="row jp" data-jump="domain" data-v="'+escAttr(d.name)+'"><div class="k" title="'+d.name+'">'+d.name+'</div>'+
+    '<div class="bar"><i style="width:'+(d.count/dmax*100)+'%"></i></div>'+
+    '<div class="v">'+d.count+'</div></div>').join('')
+    : '<div class="empty">还没收藏，先去收几个吧。</div>';
+
+  // 技术栈（chip 可点，钻取按技术栈筛选）
+  var tlist = p.techs_top || p.techs;
+  $('techs').innerHTML = tlist.length ? tlist.map(t =>
+    '<span class="chip jp" data-jump="tech" data-v="'+escAttr(t.name)+'">'+t.name+' <b>'+t.count+'</b></span>').join('')
+    + (p.techs.length > tlist.length
+        ? '<div class="empty" style="padding:8px 0 0">已显示前 '+tlist.length+' 项，共 '+p.techs.length+' 项。</div>' : '')
+    : '<div class="empty">暂无技术栈数据。</div>';
+
+  // 来源分布
+  var SRC_LABEL = {manual:'自己找的', recommend:'推荐进来', trend:'本周榜收的',
+                   share:'分享来的', bookmark:'书签收的', ball:'悬浮球收的', import:'导入的'};
+  var sd = p.sources || {};
+  var skeys = Object.keys(sd);
+  $('sources').innerHTML = skeys.length ? skeys.map(function(k){
+    return '<span class="chip">'+escAttr(SRC_LABEL[k] || k)+' <b>'+sd[k]+'</b></span>';
+  }).join('') : '<div class="empty">暂无来源数据。</div>';
+
+  // 成熟度（匹配 analyze.detect_maturity 的真实取值：顶级/成熟/活跃/新兴/未知）
+  function matCls(name){
+    if (name.indexOf('顶级') >= 0) return 'core';
+    if (name.indexOf('成熟') >= 0) return 'usual';
+    return 'try';
+  }
+  $('maturity').innerHTML = p.maturity.length ? p.maturity.map(m =>
+    '<span class="pill '+matCls(m.name)+'">'+m.name+' · '+m.count+'</span>').join('')
+    : '<div class="empty">暂无成熟度数据。</div>';
+
+  // 收藏动机（多轴 user 来源，chip 可点钻取）
+  const md = p.motive_dist || {};
+  const mkeys = Object.keys(md);
+  $('motive').innerHTML = mkeys.length ? mkeys.map(k =>
+    '<span class="chip jp" data-jump="motive" data-v="'+escAttr(k)+'">'+k+' <b>'+md[k]+'</b></span>').join('')
+    : '<div class="empty">暂无机动数据（备注缺失时默认记为「随手刷到」）。</div>';
+
+  // 时间线
+  if (p.timeline_days.length){
+    const tmax = Math.max(1, ...p.timeline_days.map(t => t.count));
+    $('timeline').innerHTML = p.timeline_days.map(t =>
+      '<div class="c" title="'+t.date+'：'+t.count+'" style="height:'+(t.count/tmax*100)+'%"></div>').join('');
+    $('tl-a').textContent = p.timeline_days[0].date;
+    $('tl-b').textContent = p.timeline_days[p.timeline_days.length-1].date;
+  } else {
+    $('timeline').innerHTML = '<div class="empty">暂无时间线。</div>';
+  }
+  if (p.span){
+    $('span-note').textContent = '从 '+p.span.first+' 到 '+p.span.last+'，跨度 '+p.span.days+' 天。收藏行为本身就是一段轨迹。';
+  }
+
+  // 时段
+  const smax = Math.max(1, ...Object.values(p.active_slots));
+  $('slots').innerHTML = Object.entries(p.active_slots).map(([k,v]) =>
+    '<div class="slot"><div class="k">'+k+'</div>'+
+    '<div class="bar"><i style="width:'+(v/smax*100)+'%"></i></div>'+
+    '<div class="v">'+v+'</div></div>').join('');
+
+  // 缺角（to 为领域名，可点钻取按该领域筛选）
+  $('gaps').innerHTML = p.gaps.length ? p.gaps.map(g =>
+    '<div class="gap jp" data-jump="domain" data-v="'+escAttr(g.to)+'"><div class="t">'+g.from+' → '+g.to+'</div>'+
+    '<div class="h">'+g.hint+'</div></div>').join('')
+    : '<div class="empty">暂无明显缺角观察（收藏还不够多，或已较均衡）。</div>';
+}
+
+// 钻取：画像上的可点项跳转到卡片页对应筛选
+function bindJump(){
+  document.querySelectorAll('.jp').forEach(function(el){
+    el.addEventListener('click', function(){
+      var layer = el.getAttribute('data-jump');
+      var v = el.getAttribute('data-v');
+      if(layer && v) location.href = 'cards.html?'+layer+'='+encodeURIComponent(v);
+    });
+  });
+}
+function escAttr(s){ return String(s).replace(/"/g,'&quot;'); }
+
+load().then(bindJump);
+</script>
+<script src="/nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#FBFAF7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="收藏箱推荐">
+<title>收藏箱 · 仓库推荐</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  body{max-width:560px;margin:0 auto;padding:env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom))}
+  header{padding:28px 4px 8px; display:flex; align-items:baseline; justify-content:space-between}
+  header h1{margin:0}
+  header p{margin:6px 0 0; width:100%}
+  .wrap{margin-top:14px}
+  .block .bhead{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .block .dom{font-size:16px; font-weight:600}
+  .block .hint{font-size:12px; color:var(--muted); margin:6px 0 10px}
+  .conf{font-size:11px; border-radius:999px; padding:1px 8px; white-space:nowrap; border:1px solid transparent}
+  .conf.hi{color:var(--ok); border-color:var(--ok); background:rgba(63,107,94,.10)}
+  .conf.mid{color:var(--warn); border-color:var(--warn); background:rgba(181,131,46,.12)}
+  .conf.lo{color:var(--faint); border-color:var(--line); background:transparent}
+  .conf.src{color:var(--accent); border-color:var(--accent-line); background:var(--accent-dim)}
+  .conf.src.rule{color:var(--muted); border-color:var(--line); background:transparent}
+  .repo{border-top:1px dashed var(--line); padding:12px 0 4px}
+  .repo:first-of-type{border-top:none; padding-top:4px}
+  .repo .rname{font-size:15px; font-weight:600; word-break:break-all}
+  .repo .rname a{color:var(--ink); text-decoration:none}
+  .repo .rname a:hover{color:var(--accent)}
+  .repo .rmeta{font-size:12px; color:var(--faint); margin-top:2px}
+  .repo .rdesc{font-size:13px; color:var(--ink); margin-top:6px}
+  .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px}
+  .repoline{display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:10px}
+  .stars{font-size:12px; color:var(--faint)}
+  .reload{margin-top:14px; font-size:13px; color:var(--accent-ink); background:var(--accent);
+    border:none; border-radius:var(--r); padding:8px 16px; font-family:inherit; cursor:pointer; font-weight:600}
+  .reload:disabled{opacity:.6; cursor:default}
+  .reload-note{font-size:12px; color:var(--faint); margin-top:7px; min-height:16px}
+  /* ===== 本周涨星 Top10 独立板块 ===== */
+  .trend{border:1px solid var(--line); border-radius:var(--r-lg); background:var(--surface);
+    padding:14px 14px 6px; margin-top:14px}
+  .trend .thead{display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:4px}
+  .trend .tt{font-size:15px; font-weight:600; color:var(--ink)}
+  .trend .tsub{font-size:11px; color:var(--faint)}
+  .trend .sep{height:1px; background:var(--line); margin:8px 0 2px}
+  .trow{display:flex; align-items:flex-start; gap:10px; padding:11px 0; border-bottom:1px solid var(--line)}
+  .trow:last-child{border-bottom:none}
+  .trow .rank{font-size:14px; font-weight:700; color:var(--accent); min-width:20px; text-align:right; padding-top:1px}
+  .trow .tmain{flex:1; min-width:0}
+  .trow .tname{font-size:14px; font-weight:600; word-break:break-all}
+  .trow .tname a{color:var(--ink); text-decoration:none}
+  .trow .tname a:hover{color:var(--accent)}
+  .trow .tdesc{font-size:12.5px; color:var(--muted); margin-top:3px; line-height:1.5;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .trow .tmeta{font-size:11.5px; color:var(--faint); margin-top:5px; display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+  .trow .wk{color:var(--ok); font-weight:600}
+  .trow .tacts{display:flex; flex-direction:column; gap:6px; align-items:flex-end; flex-shrink:0}
+  .trow .tacts .abtn{font-size:11.5px; padding:4px 10px; white-space:nowrap}
+  .trow .tacts .muted{color:var(--accent); background:transparent; border:1px solid var(--line)}
+  .trend .fail{font-size:12px; color:var(--muted); padding:10px 0}
+</style>
+</head>
+<body data-nav="recommend">
+<header>
+  <div>
+    <h1>收藏箱 · 仓库推荐</h1>
+    <p>基于你的收藏弱协同推断，可能想收的具体仓库。每条都标了依据。</p>
+  </div>
+</header>
+<button class="reload" id="reload">重新发现</button>
+<div class="reload-note" id="reloadNote"></div>
+
+<section class="trend" id="trendBox">
+  <div class="thead">
+    <span class="tt">GitHub 本周涨星 Top 10</span>
+    <span class="tsub" id="trendSub">全球趋势 · 与你的收藏无关</span>
+  </div>
+  <div class="sep"></div>
+  <div id="trendList"><div class="fail">加载中…</div></div>
+</section>
+
+<div class="wrap" id="wrap"><div class="empty">加载中…</div></div>
+
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+
+function repoHTML(r){
+  var chips = (r.topics||[]).map(function(t){return '<span class="chip">'+esc(t)+'</span>'}).join('');
+  var stars = (r.stars!=null) ? ('<span class="stars">★ '+r.stars+'</span>') : '';
+  var lang = r.language ? (' · '+esc(r.language)) : '';
+  var url = r.url || '';
+  return ''+
+  '<div class="repo" data-url="'+esc(url)+'">'+
+    '<div class="rname"><a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(r.full_name)+'</a></div>'+
+    '<div class="rmeta">'+stars+lang+'</div>'+
+    (r.description?'<div class="rdesc">'+esc(r.description)+'</div>':'')+
+    (chips?'<div class="chips">'+chips+'</div>':'')+
+    '<div class="repoline">'+
+      '<button class="abtn muted" data-url="'+esc(url)+'" data-view="1">查看仓库 ↗</button>'+
+      '<button class="abtn" data-url="'+esc(url)+'">收藏</button>'+
+    '</div>'+
+  '</div>';
+}
+
+function blockHTML(b){
+  var repos = (b.repos||[]).map(repoHTML).join('');
+  var conf = b.confidence || '';
+  var confCls = conf.indexOf('高')>=0 ? 'hi' : (conf.indexOf('中')>=0 ? 'mid' : 'lo');
+  var confTag = conf ? ('<span class="conf '+confCls+'">'+esc(conf)+'置信</span>') : '';
+  var srcTag = (b.source==='llm') ? '<span class="conf src">AI 推</span>' : '<span class="conf src rule">规则推</span>';
+  return ''+
+  '<div class="block" data-dom="'+esc(b.domain)+'">'+
+    '<div class="bhead"><span class="dom">'+esc(b.domain)+'</span>'+confTag+srcTag+'</div>'+
+    '<div class="hint">'+esc(b.hint)+'</div>'+
+    repos+
+  '</div>';
+}
+
+function collect(btn, url, source){
+  btn.disabled = true; btn.textContent = '收集中…';
+  // 带上来源：画像页要靠它区分「自己找的」和「被推的」，不带就永远统计不出来
+  fetch('/collect',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url:url, source: source || 'manual'})})
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.dup){ btn.textContent='已在收藏'; btn.classList.add('done'); return; }
+      btn.textContent='已收藏'; btn.classList.add('done');
+      // 收藏成功后从视图移除该条
+      var repoEl = btn.closest('.repo');
+      if(repoEl){
+        var block = repoEl.closest('.block');
+        repoEl.remove();
+        if(block && !block.querySelector('.repo')) block.remove();
+      }
+    })
+    .catch(function(){ btn.disabled=false; btn.textContent='收藏'; });
+}
+
+function trendRowHTML(r, i){
+  var stars = (r.stars!=null) ? r.stars.toLocaleString() : '0';
+  var wk = (r.weekly_stars!=null) ? ('+'+r.weekly_stars.toLocaleString()+' 本周') : '';
+  var lang = r.language ? ('· '+esc(r.language)) : '';
+  return ''+
+  '<div class="trow" data-url="'+esc(r.url)+'">'+
+    '<div class="rank">'+(i+1)+'</div>'+
+    '<div class="tmain">'+
+      '<div class="tname"><a href="'+esc(r.url)+'" target="_blank" rel="noopener">'+esc(r.full_name)+'</a></div>'+
+      (r.description?'<div class="tdesc">'+esc(r.description)+'</div>':'')+
+      '<div class="tmeta"><span class="wk">'+wk+'</span><span>★ '+stars+'</span><span>'+lang+'</span></div>'+
+    '</div>'+
+    '<div class="tacts">'+
+      '<button class="abtn muted" data-url="'+esc(r.url)+'" data-view="1">查看 ↗</button>'+
+      '<button class="abtn" data-url="'+esc(r.url)+'">收藏</button>'+
+    '</div>'+
+  '</div>';
+}
+
+function renderTrending(){
+  var box = document.getElementById('trendList');
+  var sub = document.getElementById('trendSub');
+  fetch('/api/trending').then(function(r){return r.json()}).then(function(d){
+    var repos = d.repos || [];
+    if(!repos.length){
+      box.innerHTML = '<div class="fail">暂时拿不到本周趋势（可能网络受限），稍后刷新看看。</div>';
+      if(sub) sub.textContent = '获取失败 · 与你的收藏无关';
+      return;
+    }
+    box.innerHTML = repos.map(trendRowHTML).join('');
+    box.querySelectorAll('.abtn').forEach(function(b){
+      if(b.getAttribute('data-view')){
+        b.addEventListener('click', function(){ window.open(b.getAttribute('data-url'), '_blank', 'noopener'); });
+      } else {
+        b.addEventListener('click', function(){ collect(b, b.getAttribute('data-url'), 'trend'); });
+      }
+    });
+    if(sub) sub.textContent = '共 '+repos.length+' 个 · 全球趋势 · 与你的收藏无关';
+  }).catch(function(){
+    box.innerHTML = '<div class="fail">加载失败，确认服务在运行。</div>';
+  });
+}
+
+function load(){
+  var btn = document.getElementById('reload');
+  var note = document.getElementById('reloadNote');
+  btn.disabled = true; btn.textContent = '发现中…';
+  if(note) note.textContent = '';
+  fetch('/api/recommend').then(function(r){return r.json()}).then(function(d){
+    var w = document.getElementById('wrap');
+    var recs = d.recommendations || [];
+    if(!recs.length){
+      w.innerHTML = '<div class="empty">暂无可推荐仓库。也许你的收藏已较完整，或先多收几个不同领域的仓库。</div>';
+      btn.disabled = false; btn.textContent = '重新发现';
+      if(note) note.textContent = '已重新拉取 · 暂无可推荐项';
+      return;
+    }
+    w.innerHTML = recs.map(blockHTML).join('');
+    w.querySelectorAll('.abtn').forEach(function(b){
+      if(b.getAttribute('data-view')){
+        b.addEventListener('click', function(){ window.open(b.getAttribute('data-url'), '_blank', 'noopener'); });
+      } else {
+        b.addEventListener('click', function(){ collect(b, b.getAttribute('data-url'), 'recommend'); });
+      }
+    });
+    btn.disabled = false; btn.textContent = '重新发现';
+    var t = new Date();
+    var hh = String(t.getHours()).padStart(2,'0');
+    var mm = String(t.getMinutes()).padStart(2,'0');
+    if(note) note.textContent = '已刷新 · ' + hh + ':' + mm + '（推荐基于你当前收藏画像，收藏越多越准）';
+  }).catch(function(){
+    document.getElementById('wrap').innerHTML = '<div class="empty">加载失败，确认服务在运行。</div>';
+    btn.disabled = false; btn.textContent = '重新发现';
+    if(note) note.textContent = '刷新失败，请重试';
+  });
+}
+
+document.getElementById('reload').addEventListener('click', load);
+load();
+renderTrending();
+</script>
+<script src="/nav.js"></script>
+</body>
+</html>

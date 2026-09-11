@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>智能收藏箱 · 项目评价报告</title>
+<style>
+/* 复用项目 theme.css 的暖纸白 / 暖陶土变量，不另起配色 */
+:root{
+  --bg:#FBFAF7; --surface:#FFFFFF; --surface-2:#F2F0EB;
+  --ink:#23201B; --muted:#6B655C; --faint:#9A938A;
+  --line:#E6E2DA; --line-soft:#EFECE5;
+  --accent:#B5673E; --accent-2:#C67B52; --accent-ink:#FFF;
+  --accent-dim:rgba(181,103,62,.10); --accent-line:rgba(181,103,62,.34);
+  --ok:#3F6B5E; --warn:#B5832E; --err:#B4472F;
+  --r-sm:6px; --r:9px; --r-lg:13px;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono","Roboto Mono",Menlo,Consolas,monospace;
+  --ease:cubic-bezier(.22,.61,.36,1);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.65;
+  -webkit-font-smoothing:antialiased;padding:0 20px 72px}
+.wrap{max-width:860px;margin:0 auto}
+
+/* 页头 */
+header{padding:52px 0 22px;border-bottom:1px solid var(--line);margin-bottom:26px}
+.kicker{font-size:12px;color:var(--faint);letter-spacing:.12em;font-family:var(--mono)}
+h1{font-size:27px;font-weight:600;margin:12px 0 8px;letter-spacing:.2px}
+.sub{font-size:14px;color:var(--muted);margin:0}
+.meta{margin-top:16px;font-size:12px;color:var(--faint);font-family:var(--mono);line-height:1.9}
+
+/* 判决条 */
+.verdict{margin-top:24px;background:var(--surface);border:1px solid var(--accent-line);
+  border-left:3px solid var(--accent);border-radius:var(--r-lg);padding:20px 22px}
+.verdict .vt{font-size:12px;color:var(--accent);font-family:var(--mono);letter-spacing:.08em;margin-bottom:8px}
+.verdict p{margin:0;font-size:16px;line-height:1.75}
+.verdict b{color:var(--accent)}
+
+/* 区块 */
+section{margin-top:34px}
+h2{font-size:15px;font-weight:600;margin:0 0 4px;display:flex;align-items:center;gap:9px}
+h2::before{content:"";width:3px;height:14px;background:var(--accent);border-radius:2px}
+.lead{font-size:13px;color:var(--muted);margin:0 0 16px}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px 20px}
+
+/* 评分 */
+.score-total{display:flex;align-items:baseline;gap:12px;margin-bottom:18px}
+.score-total .n{font-size:40px;font-weight:600;color:var(--accent);font-family:var(--mono);line-height:1}
+.score-total .l{font-size:13px;color:var(--muted)}
+.srow{display:flex;align-items:center;gap:12px;margin:11px 0;font-size:13px}
+.srow .k{width:118px;flex:none;color:var(--ink)}
+.srow .bar{flex:1;height:8px;background:var(--line-soft);border-radius:999px;overflow:hidden}
+.srow .bar i{display:block;height:100%;background:var(--accent);border-radius:999px}
+.srow .v{width:34px;flex:none;text-align:right;font-family:var(--mono);color:var(--muted)}
+.srow.low .bar i{background:var(--err)}
+.srow.mid .bar i{background:var(--warn)}
+
+/* 证据 */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-weight:600;font-size:12px;color:var(--muted);padding:9px 10px;
+  border-bottom:1px solid var(--line)}
+td{padding:9px 10px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td.mono{font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap}
+code{font-family:var(--mono);font-size:12px;background:var(--surface-2);color:var(--accent-2);
+  padding:1px 5px;border-radius:4px;border:1px solid var(--line)}
+
+/* 问题条目 */
+.issue{display:flex;gap:14px;padding:14px 0;border-bottom:1px dashed var(--line)}
+.issue:last-child{border-bottom:none}
+.sev{flex:none;width:38px;height:22px;border-radius:var(--r-sm);font-size:11px;font-weight:600;
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono)}
+.sev.p0{color:var(--err);background:rgba(180,71,47,.10);border:1px solid rgba(180,71,47,.34)}
+.sev.p1{color:var(--warn);background:rgba(181,131,46,.12);border:1px solid rgba(181,131,46,.34)}
+.sev.p2{color:var(--muted);background:var(--surface-2);border:1px solid var(--line)}
+.issue .body{flex:1;min-width:0}
+.issue .t{font-size:14px;font-weight:600;margin-bottom:3px}
+.issue .d{font-size:13px;color:var(--muted)}
+.issue .d b{color:var(--ink);font-weight:600}
+
+/* 时间线 */
+.phase{display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--line-soft)}
+.phase:last-child{border-bottom:none}
+.phase .when{flex:none;width:96px}
+.phase .when .p{font-size:12px;color:var(--accent);font-family:var(--mono);letter-spacing:.04em}
+.phase .when .s{font-size:12px;color:var(--faint);margin-top:2px}
+.phase ul{margin:0;padding-left:17px;font-size:13px}
+.phase li{margin:5px 0}
+.phase li b{font-weight:600}
+
+/* 修法清单 */
+.fix{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-soft);font-size:13px}
+.fix:last-child{border-bottom:none}
+.fix .no{flex:none;font-family:var(--mono);font-size:12px;color:var(--accent);width:22px}
+.fix .txt{flex:1}
+.fix .txt b{font-weight:600}
+.fix .eff{flex:none;font-size:11px;color:var(--muted);font-family:var(--mono);padding-top:2px}
+
+footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);
+  font-size:12px;color:var(--faint);text-align:center;line-height:1.9}
+@media (max-width:560px){
+  .srow .k{width:88px}
+  .phase{flex-direction:column;gap:6px}
+  .phase .when{width:auto;display:flex;gap:10px;align-items:baseline}
+  .fix .eff{display:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">PROJECT REVIEW · REPO-COLLECTOR</div>
+  <h1>智能收藏箱 · 项目评价报告</h1>
+  <p class="sub">全量读码 + 实跑验证：服务真启动、接口真调用、数据库真查。</p>
+  <div class="meta">
+    评审日期 2026-09-11<br>
+    代码量 src 2.7k 行 / web 12 文件 / native-shell 2 骨架<br>
+    git 提交数 0（无历史可比对）
+  </div>
+</header>
+
+<div class="verdict">
+  <div class="vt">核 心 判 断</div>
+  <p>骨架立得住，叙事也站得住。但它的<b>立身之本——「多维同步存储与检索」——在代码里还没有闭合</b>：实测发现卡片与多轴表已经分叉，四类视图各说各话。把这条一致性契约用代码和测试钉死，它才是产品；否则再多页面也只是同一份数据的不同视图。</p>
+</div>
+
+<section>
+  <h2>评分</h2>
+  <p class="lead">八维打分，满分 5。数据一致性与工程化是最拖后腿的两项。</p>
+  <div class="card">
+    <div class="score-total"><span class="n">3.1</span><span class="l">/ 5 · 强原型（strong prototype），尚未跨过「产品」线</span></div>
+    <div class="srow"><span class="k">产品定位 / 概念</span><span class="bar"><i style="width:90%"></i></span><span class="v">4.5</span></div>
+    <div class="srow"><span class="k">架构设计</span><span class="bar"><i style="width:80%"></i></span><span class="v">4.0</span></div>
+    <div class="srow"><span class="k">前端 / 设计系统</span><span class="bar"><i style="width:70%"></i></span><span class="v">3.5</span></div>
+    <div class="srow mid"><span class="k">完成度</span><span class="bar"><i style="width:70%"></i></span><span class="v">3.5</span></div>
+    <div class="srow mid"><span class="k">代码质量</span><span class="bar"><i style="width:60%"></i></span><span class="v">3.0</span></div>
+    <div class="srow mid"><span class="k">安全</span><span class="bar"><i style="width:50%"></i></span><span class="v">2.5</span></div>
+    <div class="srow low"><span class="k">数据一致性</span><span class="bar"><i style="width:40%"></i></span><span class="v">2.0</span></div>
+    <div class="srow low"><span class="k">工程化</span><span class="bar"><i style="width:30%"></i></span><span class="v">1.5</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>实测证据</h2>
+  <p class="lead">每条结论都来自真实运行，不是读文档推出来的。</p>
+  <div class="card">
+    <table>
+      <tr><th>验证动作</th><th>实测结果</th></tr>
+      <tr><td>启动 + 探活</td><td><code>python run.py</code> 成功，8732 监听正常，/health 200</td></tr>
+      <tr><td>重算接口</td><td>200，且<b>真调通了 LLM</b>（返回模型撰写的卡片，非规则卡）</td></tr>
+      <tr><td>重算后的数据一致性</td><td class="mono" style="color:var(--err)">card.domain=AI·LLM ｜ repo_axis.domain=前端/UI</td></tr>
+      <tr><td>伪造 Origin 发预检</td><td class="mono" style="color:var(--err)">Allow-Origin: * ｜ Methods: …DELETE</td></tr>
+      <tr><td>非法 URL / 非仓库域名</td><td>400 且文案正确（这块做得对）</td></tr>
+      <tr><td>白名单外文件</td><td>/README.md 404、/nope.html 404</td></tr>
+      <tr><td>SQLite 配置</td><td class="mono">journal_mode=delete ｜ user_version=0 ｜ freelist=7</td></tr>
+      <tr><td>grep <code>--paper</code></td><td>仅 map.html 用，theme.css <b>从未定义</b></td></tr>
+      <tr><td>grep <code>来自推荐</code></td><td><b>只有读取处，没有写入处</b></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>问题清单 · P0 正确性</h2>
+  <p class="lead">这一档直接击穿项目主张，值得当天修。</p>
+  <div class="card">
+    <div class="issue"><span class="sev p0">P0-1</span><div class="body">
+      <div class="t">卡片重算后不同步轴表</div>
+      <div class="d"><code>regenerate</code> 只 <code>UPDATE repos.card</code>，没调 <code>sync_axes()</code>。实测 id=15 卡片说 AI·LLM、轴表说 前端/UI —— <b>图谱、画像、筛选胶囊、卡片页四处口径互相矛盾</b>。</div>
+    </div></div>
+    <div class="issue"><span class="sev p0">P0-2</span><div class="body">
+      <div class="t">轴表来源标注恒为 heuristic / 0.6</div>
+      <div class="d"><code>sync_axes</code> 写死来源，不看 <code>card["source"]</code>。实测卡片 source=llm，轴表却记 heuristic。前端费力区分「AI 分析 / 规则预览」，<b>下游把这层信息丢了，confidence 这个卖点不可信</b>。</div>
+    </div></div>
+    <div class="issue"><span class="sev p0">P0-3</span><div class="body">
+      <div class="t">「来自推荐」是恒零指标</div>
+      <div class="d">推荐页 POST 只带 <code>{url}</code>，后端靠 <code>"来自推荐" in note</code> 判断 —— <b>全项目无任何写入处</b>。画像页在展示一个永远为 0 的数字，违反「不编假洞察」的自定铁律。</div>
+    </div></div>
+    <div class="issue"><span class="sev p0">P0-4</span><div class="body">
+      <div class="t">推荐依据是被写死的共现表</div>
+      <div class="d"><code>GAP_COOCCUR</code> 是 10×2 的硬编码字典。缺角是<b>编者预判</b>，不是你的行为统计 —— 与「镜子会自我演化」的主张不符，是理念层最大的断层。</div>
+    </div></div>
+  </div>
+</section>
+
+<section>
+  <h2>问题清单 · P1 安全与健壮性</h2>
+  <div class="card">
+    <div class="issue"><span class="sev p1">P1-1</span><div class="body">
+      <div class="t">零鉴权 + CORS 通配 + 不校验 Origin</div>
+      <div class="d">实测伪造 Origin 仍放行 DELETE。你浏览任意网页时，该页 JS 就能清空收藏或灌垃圾数据。当前只绑 127.0.0.1 挡住外网，<b>挡不住浏览器；一旦改成局域网 IP 就全敞开</b>。</div>
+    </div></div>
+    <div class="issue"><span class="sev p1">P1-2</span><div class="body">
+      <div class="t">SQLite 未开 WAL / busy_timeout</div>
+      <div class="d">实测 <code>journal_mode=delete</code>。多线程 HTTP + 后台 worker 并发写同一文件，有 <code>database is locked</code> 风险。</div>
+    </div></div>
+    <div class="issue"><span class="sev p1">P1-3</span><div class="body">
+      <div class="t">静态文件靠硬编码白名单、无请求体上限</div>
+      <div class="d">加一个页面必须改后端；大 body 可打爆内存。</div>
+    </div></div>
+  </div>
+</section>
+
+<section>
+  <h2>问题清单 · P2 结构与前端</h2>
+  <div class="card">
+    <div class="issue"><span class="sev p2">P2-1</span><div class="body">
+      <div class="t">LLM 调用与 JSON 解析复制了 4 份</div>
+      <div class="d">四个 <code>_llm_*</code> 函数各写一遍兜底解析；<code>detect_tags</code> 与 <code>detect_tech_stack</code> 近乎重复。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-2</span><div class="body">
+      <div class="t">零配置层</div>
+      <div class="d"><code>8732</code> 散落 20 处；<code>LANTERN_ROOT</code> 直接跨项目 sys.path 注入；GitHub 搜索无 Token 被限速 10/min。README 自己写着「环境变量暂不支持，需改代码」。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-3</span><div class="body">
+      <div class="t">代码文件双份且已分叉</div>
+      <div class="d">两份 ball.js（暂无差异，但无同步机制）；两份 host.html <b>已经不一致</b>。「改一处全壳受益」靠自觉维持。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-4</span><div class="body">
+      <div class="t">git 仓库零提交</div>
+      <div class="d">所有文件 untracked，无历史、无回滚、无分支实验能力。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-5</span><div class="body">
+      <div class="t">文档三处自相矛盾</div>
+      <div class="d">README 说 M4 待做/M5 待接通，计划表说已全部完成；产品说明书接口只列 4 个（实际 12 个）、数据模型漏了 3 张轴表；两份文档还在讲「宣纸墨韵」，而 theme.css 注释明说不沿用该体系。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-6</span><div class="body">
+      <div class="t">迁移无版本、DB 不回收</div>
+      <div class="d"><code>ALTER TABLE + except: pass</code> 吞异常，<code>user_version=0</code>，游离页未 VACUUM。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-7</span><div class="body">
+      <div class="t">图谱 tooltip 文字实际不可见</div>
+      <div class="d"><code>color:var(--paper)</code> 而 <code>--paper</code> 本项目从未定义 → var 失效 → 字色回退继承 <code>--ink</code>，底色也是 <code>--ink</code>。<b>#23201B 写在 #23201B 上</b>，只有加粗标题那半行能看见。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-8</span><div class="body">
+      <div class="t">成熟度映射与文案双错</div>
+      <div class="d">着色逻辑匹配「常用 / 实验」，实际数据是「顶级 / 成熟 / 活跃 / 新兴」（按 stars 分桶）→ 除顶级外全部涂灰；板块文案还在讲并不存在的实验/常用/核心。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-9</span><div class="body">
+      <div class="t">设计系统被局部推翻</div>
+      <div class="d">cards.html 重定义 <code>.pill</code> 为实底并写死 <code>#fff</code>，与 theme.css 的淡底描边冲突；ball.js 颜色全硬编码无变量回退。</div>
+    </div></div>
+    <div class="issue"><span class="sev p2">P2-10</span><div class="body">
+      <div class="t">统计口径失真</div>
+      <div class="d">后端把技术栈截断到 12 条，前端却拿这个长度当「技术领域」总数；facets 的 tech 轴被 topic 噪声污染 —— 同一条收藏贡献了 5 个近义项各计 1。</div>
+    </div></div>
+  </div>
+</section>
+
+<section>
+  <h2>优先修法</h2>
+  <p class="lead">前五条加起来不到半天，却能修掉全部 P0 与最刺眼的前端事故。</p>
+  <div class="card">
+    <div class="fix"><span class="no">01</span><span class="txt"><b>regenerate 后补一次 sync_axes</b> —— 一行代码，修掉数据分叉</span><span class="eff">治 P0-1</span></div>
+    <div class="fix"><span class="no">02</span><span class="txt"><b>sync_axes 按 card.source 决定来源与置信度</b> —— llm→0.85，heuristic→0.6</span><span class="eff">治 P0-2</span></div>
+    <div class="fix"><span class="no">03</span><span class="txt"><b>推荐页带上 source 字段，画像改读字段而非 grep 中文</b></span><span class="eff">治 P0-3</span></div>
+    <div class="fix"><span class="no">04</span><span class="txt"><b>tooltip 换掉未定义变量</b>，用 #FBFAF7 或新增 --on-ink</span><span class="eff">治 P2-7</span></div>
+    <div class="fix"><span class="no">05</span><span class="txt"><b>成熟度着色改匹配真实取值，板块文案重写</b></span><span class="eff">治 P2-8</span></div>
+    <div class="fix"><span class="no">06</span><span class="txt"><b>抽 config.py</b>：端口 / 绑定 / Token / LLM 路径 / GitHub Token 全走环境变量</span><span class="eff">一周内</span></div>
+    <div class="fix"><span class="no">07</span><span class="txt"><b>抽 db.py</b>：统一连接工厂（WAL + busy_timeout）+ user_version 版本化迁移</span><span class="eff">一周内</span></div>
+    <div class="fix"><span class="no">08</span><span class="txt"><b>收敛 4 份 LLM 胶水成 _llm_json()</b>，并给它超时与熔断</span><span class="eff">一周内</span></div>
+    <div class="fix"><span class="no">09</span><span class="txt"><b>静态文件改目录级 serve</b> + 路径穿越校验 + 请求体上限</span><span class="eff">一周内</span></div>
+    <div class="fix"><span class="no">10</span><span class="txt"><b>补最小 unittest 基线</b>，含「重算后轴表与卡片一致」这条 P0 回归</span><span class="eff">一周内</span></div>
+    <div class="fix"><span class="no">11</span><span class="txt"><b>做第一次提交</b> —— .gitignore 已排好，零提交是纯风险</span><span class="eff">10 分钟</span></div>
+    <div class="fix"><span class="no">12</span><span class="txt"><b>文档收敛</b>：删旧主题描述、补接口与数据模型、统一里程碑口径</span><span class="eff">半小时</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>后续开发方向</h2>
+  <div class="card">
+    <div class="phase">
+      <div class="when"><div class="p">近期</div><div class="s">1–2 周</div></div>
+      <ul>
+        <li><b>巩固地基</b>：上面 12 条全部落地</li>
+        <li><b>定义一致性契约</b>：card 是唯一真源，轴表是可重建派生物；提供一键重建 + 差异报告</li>
+        <li><b>加自检接口</b> <code>GET /api/doctor</code>：报告不一致条数、LLM 可用性、限速余量、DB 游离页</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <div class="when"><div class="p">中期</div><div class="s">1–2 月</div></div>
+      <ul>
+        <li><b>接通 M4 / M5（最高优先）</b>：真机分享直达 + 常驻悬浮球。不接通，画像与缺角永远建立在 2 条样本上，再优化也是空转</li>
+        <li><b>置信度由样本量算出</b>，而不是模型嘴上说的「高/中/低」</li>
+        <li><b>卡片加一个字反馈</b>（用过 / 弃了 / 还想用），把收藏从终点变成轨迹，替掉 stars 分桶这种间接代理</li>
+        <li><b>查询下沉到 SQL</b>：给轴建索引，多轴 AND 用 INTERSECT，别再全表拉进内存过滤</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <div class="when"><div class="p">远期</div><div class="s">方向性</div></div>
+      <ul>
+        <li><b>event log + 可重放</b>：轴表随时可从事件重建。到这一步，「多维同步存储」才从口号变成能力</li>
+        <li><b>多维交叉可视化</b>：图谱现在只投在领域一维上，三轴切换或叠加才是差异化卖点</li>
+        <li><b>可分享只读快照</b>：export.json / 静态周报，顺带补上社交闭环</li>
+        <li><b>新轴由数据提议</b>：领域白名单不该写死 10 类，样本够了让共现聚类提议、人确认</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer>
+  智能收藏箱 · 项目评价报告 · 2026-09-11<br>
+  18 项问题：P0 四条 · P1 三条 · P2 十一条　其中 5 条半天内可修，7 条一周内可修
+</footer>
+
+</div>
+</body>
+</html>

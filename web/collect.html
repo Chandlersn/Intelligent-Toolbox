@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#FBFAF7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="收藏箱收藏">
+<title>收藏箱 · 一键收藏仓库</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  body{max-width:560px;margin:0 auto;padding:env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom))}
+  header{padding:28px 4px 8px}
+  header h1{margin:0}
+  header p{margin:6px 0 0}
+  .field{margin-top:18px}
+  label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px}
+  textarea{resize:vertical; min-height:56px}
+  button.collect{width:100%; margin-top:18px; min-height:54px; font-size:17px}
+  .list{margin-top:30px}
+  .list .sec-h{margin-bottom:12px}
+  .item .u{font-size:14px; word-break:break-all}
+  .item{cursor:pointer; border-radius:var(--r); padding:10px 11px; margin:0 -11px;
+    transition:background .12s var(--ease), box-shadow .12s var(--ease)}
+  .item:hover{background:var(--surface-2); box-shadow:inset 0 0 0 1px var(--line)}
+  .item:active{background:var(--surface-2)}
+  .item .n{font-size:13px; color:var(--muted); margin-top:4px}
+  .item .m{font-size:12px; color:var(--faint); margin-top:4px}
+  .desktop-only,.share-hint{margin-top:34px; padding:14px; background:var(--surface);
+    border:1px dashed var(--line); border-radius:var(--r-lg)}
+  .desktop-only h3{font-size:13px; margin:0 0 8px; color:var(--muted); font-weight:500}
+  .desktop-only a{color:var(--accent); text-decoration:none; font-size:14px;
+    border:1px solid var(--accent-line); border-radius:var(--r); padding:6px 12px; display:inline-block}
+  @media (max-width:480px){ .desktop-only{display:none} }
+  @media (min-width:481px){ .share-hint{display:none} }
+</style>
+</head>
+<body data-nav="collect">
+<header>
+  <h1>收藏箱 · 一键收藏仓库</h1>
+  <p>在抖音 / B 站视频简介里复制的仓库链接，贴进来点一下就收好；或直接在分享菜单选「收藏到收藏箱」。可“添加到主屏幕”当 App 用。</p>
+</header>
+
+<div class="field">
+  <label for="url">仓库地址（从视频简介复制）</label>
+  <input id="url" type="text" inputmode="url" placeholder="https://github.com/owner/repo" autocomplete="off">
+</div>
+<div class="field">
+  <label for="note">为什么收（可选，对关联图谱极有价值）</label>
+  <textarea id="note" placeholder="比如：做个人知识库的灵感来源"></textarea>
+</div>
+<button class="collect" id="btn">收藏</button>
+<div class="hint">只收 GitHub / GitLab 仓库地址。复制即收藏，分析在后台跑，不打断你。</div>
+
+<div class="list">
+  <div class="card">
+    <div class="sec-h">最近收藏</div>
+    <div class="sec-note">点任意一条，跳到卡片页查看它的完整分析。</div>
+    <div id="items"><span class="hint">还没有收藏。</span></div>
+  </div>
+</div>
+
+<div class="card desktop-only">
+  <div class="sec-h">在电脑上看 GitHub？</div>
+  <p class="hint">把下面这个拖到书签栏，在任意仓库页点一下即收藏：</p>
+  <a id="bm" href="#">收藏箱·收藏此仓库</a>
+</div>
+
+<div class="card share-hint" id="shareHint">
+  <div class="sec-h">在手机上？</div>
+  <p class="hint">把本页“添加到主屏幕”后，在抖音 / B 站 / 微信里点「分享」，选「收藏到收藏箱」即可把链接直接甩进来——不用复制再粘贴。</p>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function toast(msg){
+  var t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(function(){t.classList.remove('show')},1600);
+}
+function loadItems(){
+  fetch('/api/items').then(function(r){return r.json()}).then(function(d){
+    var box=document.getElementById('items');
+    if(!d.items || !d.items.length){ box.innerHTML='<span class="hint">还没有收藏。</span>'; return; }
+    box.innerHTML=d.items.map(function(it){
+      var meta=it.meta||{};
+      var tags='';
+      if(meta.language) tags+='<span class="tag">'+meta.language+'</span>';
+      if(meta.stars!=null) tags+='<span class="tag">★ '+meta.stars+'</span>';
+      var note=it.note?'<div class="n">'+escapeHtml(it.note)+'</div>':'';
+      var m=meta.name?'<div class="m">'+escapeHtml(meta.name)+(meta.description?(' · '+escapeHtml(meta.description)):'')+'</div>':'';
+      return '<div class="item" data-id="'+escapeHtml(it.id)+'" data-url="'+escapeHtml(it.url)+'"><div class="u">'+escapeHtml(it.url)+'</div>'+note+tags+m+'</div>';
+    }).join('');
+    box.querySelectorAll('.item').forEach(function(el){
+      el.addEventListener('click',function(){
+        var id=el.getAttribute('data-id');
+        location.href='cards.html?id='+encodeURIComponent(id);
+      });
+    });
+  }).catch(function(){/* ignore */});
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+document.getElementById('btn').addEventListener('click',function(){
+  var url=document.getElementById('url').value.trim();
+  var note=document.getElementById('note').value.trim();
+  if(!url){ toast('先粘贴仓库地址'); return; }
+  this.disabled=true;
+  fetch('/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,note:note})})
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.ok){ toast(d.dup?'已经收藏过':'已收藏 ✓'); document.getElementById('url').value=''; document.getElementById('note').value=''; loadItems(); }
+      else { toast('失败：'+(d.error||'')); }
+    })
+    .catch(function(){ toast('网络异常'); })
+    .finally(function(){ this.disabled=false; }.bind(this));
+});
+
+// 书签工具：地址按当前来源动态生成，换端口/换机器不用改代码
+(function buildBookmarklet(){
+  var el = document.getElementById('bm');
+  if(!el) return;
+  var js = "(function(){var u=location.href;" +
+    "if(!/github\\.com\\/[^\\/]+\\/[^\\/]+/.test(u)){alert('请在有仓库的 GitHub 页面使用');return;}" +
+    "fetch('" + location.origin + "/collect',{method:'POST',headers:{'Content-Type':'application/json'}," +
+    "body:JSON.stringify({url:u,source:'bookmark'})}).then(function(r){return r.json()}).then(function(d){" +
+    "alert(d.ok?(d.dup?'已收藏过':'已收藏'):'失败: '+(d.error||''))})})();";
+  el.setAttribute('href', 'javascript:' + js);
+})();
+
+loadItems();
+</script>
+<script src="/nav.js"></script>
+</body>
+</html>

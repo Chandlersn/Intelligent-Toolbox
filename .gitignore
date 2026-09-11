@@ -1,0 +1,17 @@
+# 数据文件（本地优先，不进版本库）
+*.db
+*.db.bak.*
+*.db.bak
+# WAL 模式产生的伴生文件（db.py 统一开 WAL 后出现）
+*.db-wal
+*.db-shm
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 工作记忆（项目私有）
+.workbuddy/
+
+# 依赖
+node_modules/

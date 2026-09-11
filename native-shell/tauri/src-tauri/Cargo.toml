@@ -1,0 +1,21 @@
+[package]
+name = "repo-collector-float-shell"
+version = "0.1.0"
+description = "收藏箱原生壳：常驻悬浮球 + 系统深链直达"
+authors = ["repocollector"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = { version = "2", features = ["protocol"] }
+reqwest = { version = "0.12", features = ["blocking", "json"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+strip = true
