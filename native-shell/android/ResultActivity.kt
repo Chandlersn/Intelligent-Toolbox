@@ -14,10 +14,6 @@ import android.webkit.WebViewClient
  * 顶部提供一个「完成」关闭按钮，避免用户在网页里迷路。
  */
 class ResultActivity : Activity() {
-    // 收集器在宿主机运行的地址。
-    // 模拟器用 10.0.2.2 回环到宿主机；真机改成电脑局域网 IP，如 http://192.168.x.x:8732
-    private val COLLECTOR_BASE = "http://10.0.2.2:8732"
-
     private lateinit var webView: WebView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -31,7 +27,7 @@ class ResultActivity : Activity() {
         webView.webViewClient = WebViewClient()
         setContentView(webView)
 
-        val deep = "${COLLECTOR_BASE}/collect?text=${Uri.encode(text)}"
+        val deep = "${CollectorConfig.COLLECT}?text=${Uri.encode(text)}"
         webView.loadUrl(deep)
     }
 

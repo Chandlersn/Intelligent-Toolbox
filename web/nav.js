@@ -95,3 +95,93 @@
     build();
   }
 })();
+
+/* ───────────────────────────────────────────────────────────────
+ * 仓库更新反馈：本地比对 GitHub 元数据后落下的「事件」，做成顶部提示条。
+ * 不擅自联网 —— 只在卡片页且距上次检查超过 24h、且没有未读时才自动跑一次；
+ * 其余时候靠用户点「检查更新」主动触发。事件可点「知道了」消除。
+ * ─────────────────────────────────────────────────────────────── */
+(function () {
+  function el(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function removeBanner() { var b = el("upd-banner"); if (b) b.remove(); }
+
+  // 暴露给卡片页：repo_id -> [events]，渲染角标用
+  window.__repoUpdates = window.__repoUpdates || {};
+
+  function showBanner(data) {
+    removeBanner();
+    if (!data || !data.events || !data.events.length) {
+      window.__repoUpdates = {};
+      window.dispatchEvent(new CustomEvent("repo:updates", { detail: { events: [], byRepo: {} } }));
+      return;
+    }
+    var byRepo = {};
+    data.events.forEach(function (e) { (byRepo[e.repo_id] = byRepo[e.repo_id] || []).push(e); });
+    window.__repoUpdates = byRepo;
+    var b = document.createElement("div");
+    b.id = "upd-banner";
+    b.className = "upd-banner";
+    var head = data.events.slice(0, 3).map(function (e) { return e.summary; }).join("；");
+    if (data.events.length > 3) head += " 等";
+    b.innerHTML =
+      '<span class="upd-t">有 ' + data.events.length + " 个仓库有更新</span>" +
+      '<span class="upd-list">' + esc(head) + "</span>" +
+      '<a class="upd-go" id="upd-go">查看</a>' +
+      '<a class="upd-go" id="upd-check">检查更新</a>' +
+      '<a class="upd-go" id="upd-ok">知道了</a>';
+    document.body.insertBefore(b, document.body.firstChild);
+    el("upd-go").onclick = function () { location.href = "/cards.html"; };
+    el("upd-check").onclick = function () { checkNow(); };
+    el("upd-ok").onclick = function () { markSeen(); };
+    window.dispatchEvent(new CustomEvent("repo:updates", { detail: { events: data.events, byRepo: byRepo } }));
+  }
+
+  function loadUpdates() {
+    fetch("/api/updates").then(function (r) { return r.json(); })
+      .then(showBanner).catch(function () {});
+  }
+
+  function markSeen() {
+    fetch("/api/updates/seen", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function () { removeBanner(); window.__repoUpdates = {};
+        window.dispatchEvent(new CustomEvent("repo:updates", { detail: { events: [], byRepo: {} } })); })
+      .catch(function () {});
+  }
+
+  function checkNow() {
+    fetch("/api/updates/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) {
+          loadUpdates();
+          if (d.new_events) {
+            // 轻提示交给各页的 toast（如有）；这里不强依赖
+          }
+        }
+      }).catch(function () {});
+  }
+
+  function maybeAutoCheck() {
+    // 只在卡片页主动检查，避免多页面并发打 GitHub；且没未读时才查，不打扰正在阅读的人
+    if (location.pathname.indexOf("cards.html") < 0) return;
+    fetch("/api/updates").then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.events && d.events.length) return;       // 有未读就不自动查
+      var stale = !d.last_checked_at;
+      if (!stale) {
+        try {
+          var dt = new Date(d.last_checked_at);
+          stale = (Date.now() - dt.getTime()) > 24 * 3600 * 1000;
+        } catch (e) { stale = true; }
+      }
+      if (stale) checkNow();
+    }).catch(function () {});
+  }
+
+  loadUpdates();
+  maybeAutoCheck();
+})();

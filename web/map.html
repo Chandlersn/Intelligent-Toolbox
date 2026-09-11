@@ -43,6 +43,7 @@
   .btn{ font-size:12px; color:var(--muted); background:var(--surface);
     border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; }
   .btn:hover{ color:var(--ink); border-color:var(--faint); }
+  .btn.ax.on{ color:var(--accent); border-color:var(--accent-line); background:var(--accent-dim) }
   .tooltip{ position:fixed; pointer-events:none; z-index:50; max-width:240px;
     background:var(--ink); color:var(--on-ink); font-size:12px; line-height:1.55;
     padding:9px 11px; border-radius:8px; border:1px solid rgba(35,32,27,.6); opacity:0; transition:opacity .12s; }
@@ -69,19 +70,23 @@
 <body data-nav="map">
 <header>
   <h1>兴趣图谱 · 缺角视图</h1>
-  <div class="sub">已收藏 <b id="st-total">0</b> 个仓库 · 覆盖 <b id="st-domain">0</b> 个领域 · 缺角建议 <b id="st-gap">0</b> 条</div>
+  <div class="sub">已收藏 <b id="st-total">0</b> 个仓库 · 覆盖 <b id="st-domain">0</b> 个<span id="st-unit">领域</span> · 缺角建议 <b id="st-gap">0</b> 条</div>
 </header>
 
 <div class="layout">
   <div class="graph-wrap">
     <div class="toolbar">
+      <span class="btn ax" data-axis="domain">领域</span>
+      <span class="btn ax" data-axis="tech">技术栈</span>
+      <span class="btn ax" data-axis="motive">动机</span>
+      <span class="btn ax" data-axis="use">用过吗</span>
       <span class="btn" id="btn-reset">重置视图</span>
     </div>
     <svg id="svg"></svg>
   </div>
 
   <aside>
-    <h2>领域分布</h2>
+    <h2 id="dist-t">领域分布</h2>
     <div id="domains"></div>
 
     <h2>领域相邻（来自你的收藏）</h2>
@@ -103,7 +108,30 @@ const PALETTE = {
   "数据库":"#6B8E5A","CLI/工具":"#8A8275","移动端":"#8A6BA8","安全":"#B4472F",
   "数据/可视化":"#3F7FA0","知识/笔记":"#A8743F","未分类":"#9A938A"
 };
-const colorOf = d => PALETTE[d] || "#6b7280";
+// 多轴投影：图可以按任意一维来分色 / 分组 —— 不只是领域
+const AXES = [
+  {key:"domain", label:"领域",   unit:"个领域"},
+  {key:"tech",   label:"技术栈", unit:"种技术栈"},
+  {key:"motive", label:"动机",   unit:"种动机"},
+  {key:"use",    label:"用过吗", unit:"种结果"}
+];
+let curAxis = "domain";
+
+// 节点在当前轴上的取值：取置信度最高的那个；没有就归到「未分类」
+function nodeGroup(n){
+  const vals = (n.axes || []).filter(a => a.axis === curAxis);
+  if(!vals.length) return "未分类";
+  vals.sort((a,b) => (b.confidence||0) - (a.confidence||0));
+  return vals[0].value;
+}
+// 领域有固定配色；其它轴的取值不固定，用稳定哈希映射，避免每次刷新换色
+function colorOf(v){
+  if(curAxis === "domain") return PALETTE[v] || "#6b7280";
+  const arr = Object.values(PALETTE);
+  let h = 0;
+  for(let i = 0; i < v.length; i++) h = (h * 31 + v.charCodeAt(i)) >>> 0;
+  return arr[h % arr.length];
+}
 
 const svg = document.getElementById("svg");
 const tip = document.getElementById("tip");
@@ -120,19 +148,55 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
 
 function load(){
   fetch("/api/graph").then(r=>r.json()).then(g=>{
-    nodes = g.nodes; edges = g.edges; byId = {};
+    nodes = g.nodes; byId = {};
     nodes.forEach(n=> byId[n.id] = n);
     document.getElementById("st-total").textContent = g.total;
-    document.getElementById("st-domain").textContent = g.domains.length;
     document.getElementById("st-gap").textContent = g.gaps.length;
-    renderDomains(g.domains);
     renderLinks(g.domain_links || []);
     renderGaps(g.gaps, g.sample || g.total || 0);
-    initGraph();
+    applyAxis();   // 按当前轴重算边 / 分组 / 配色 / 图例
   }).catch(e=>{
     document.getElementById("domains").innerHTML =
       '<div class="empty">加载失败：'+esc(e.message)+'</div>';
   });
+}
+
+/* 切换轴：重算一切。边由「同一取值内两两相连」生成，力导向图里自然聚成团 */
+function applyAxis(){
+  const ax = AXES.find(a => a.key === curAxis) || AXES[0];
+  document.getElementById("dist-t").textContent = ax.label + "分布";
+  document.getElementById("st-unit").textContent = ax.unit;
+  document.querySelectorAll(".btn.ax").forEach(b =>
+    b.classList.toggle("on", b.getAttribute("data-axis") === curAxis));
+  edges = edgesForAxis();
+  renderGroups();
+  document.getElementById("st-domain").textContent = groupKeys().length;
+  initGraph();
+}
+
+function edgesForAxis(){
+  const byVal = {};
+  nodes.forEach(n => {
+    const v = nodeGroup(n);
+    if(v === "未分类") return;
+    (byVal[v] = byVal[v] || []).push(n.id);
+  });
+  const out = [];
+  Object.keys(byVal).forEach(v => {
+    const ids = byVal[v];
+    for(let i = 0; i < ids.length; i++)
+      for(let j = i + 1; j < ids.length; j++)
+        out.push({source: ids[i], target: ids[j], reason: "同属「" + v + "」"});
+  });
+  return out;
+}
+
+function countsOf(k){ return nodes.filter(n => nodeGroup(n) === k).length; }
+
+function groupKeys(){
+  const m = new Map();
+  nodes.forEach(n => { const k = nodeGroup(n); m.set(k, (m.get(k) || 0) + 1); });
+  return [...m.keys()].sort((a, b) => m.get(b) - m.get(a));
 }
 
 /* 领域相邻：来自真实行为（领域间共享的技术栈），与「缺角」的种子先验分开呈现 */
@@ -149,31 +213,38 @@ function renderLinks(links){
       '<span class="n">×'+l.shared+'</span>'+
     '</div>').join('');
   box.querySelectorAll('.lnk').forEach(el=>{
-    el.onclick = ()=> toggleDomain(el.getAttribute('data-dom'));
+    // 领域相邻本来就是按领域算的，点它时先把轴切回领域，避免高亮到别的轴上
+    el.onclick = ()=>{
+      curAxis = "domain"; applyAxis();
+      toggleDomain(el.getAttribute('data-dom'));
+    };
   });
 }
 
-function renderDomains(domains){
-  const max = Math.max(1, ...domains.map(d=>d.count));
+/* 当前轴的取值分布（点一下高亮，↗ 跳卡片页按该轴筛选） */
+function renderGroups(){
+  const keys = groupKeys();
   const box = document.getElementById("domains");
   box.innerHTML = "";
-  if(!domains.length){ box.innerHTML = '<div class="empty">暂无数据，先去收藏一些仓库。</div>'; return; }
-  domains.forEach(d=>{
+  if(!keys.length){ box.innerHTML = '<div class="empty">暂无数据，先去收藏一些仓库。</div>'; return; }
+  const max = Math.max(1, ...keys.map(k => countsOf(k)));
+  keys.forEach(k => {
+    const n = countsOf(k);
     const el = document.createElement("div");
     el.className = "domain";
-    el.setAttribute("data-v", d.name);
+    el.setAttribute("data-v", k);
     el.innerHTML =
-      '<span class="dot" style="background:'+colorOf(d.name)+'"></span>'+
-      '<span class="nm">'+d.name+'</span>'+
-      '<span class="ct">'+d.count+'</span>'+
-      '<span class="goto" title="在卡片页查看该领域">↗</span>'+
-      '<div class="bar" style="flex-basis:100%"><i style="width:'+(d.count/max*100)+'%;background:'+colorOf(d.name)+'"></i></div>';
+      '<span class="dot" style="background:'+colorOf(k)+'"></span>'+
+      '<span class="nm">'+esc(k)+'</span>'+
+      '<span class="ct">'+n+'</span>'+
+      '<span class="goto" title="在卡片页按此项筛选">↗</span>'+
+      '<div class="bar" style="flex-basis:100%"><i style="width:'+(n/max*100)+'%;background:'+colorOf(k)+'"></i></div>';
     el.onclick = (e)=>{
       if(e.target && e.target.classList.contains('goto')){
-        location.href = 'cards.html?domain='+encodeURIComponent(d.name);
+        location.href = 'cards.html?' + curAxis + '=' + encodeURIComponent(k);
         return;
       }
-      toggleDomain(d.name);
+      toggleDomain(k);
     };
     box.appendChild(el);
   });
@@ -226,7 +297,7 @@ function initGraph(){
     g.setAttribute("class","node");
     const c = document.createElementNS(NS,"circle");
     c.setAttribute("r", n.r);
-    c.setAttribute("fill", colorOf(n.domain));
+    c.setAttribute("fill", colorOf(nodeGroup(n)));
     const t = document.createElementNS(NS,"text");
     t.setAttribute("text-anchor","middle");
     t.setAttribute("dy", n.r + 10);
@@ -328,9 +399,10 @@ function bindNode(g, n){
   g.addEventListener("mouseleave", hideTip);
 }
 function showTip(n, e){
-  tip.innerHTML = '<b>'+n.name+'</b><br>领域：'+n.domain+
-    '<br>星标：'+(n.stars||0).toLocaleString()+' · '+n.maturity+
-    (n.purpose? '<br><br>'+n.purpose : '');
+  const ax = AXES.find(a => a.key === curAxis) || AXES[0];
+  tip.innerHTML = '<b>'+esc(n.name)+'</b><br>'+esc(ax.label)+'：'+esc(nodeGroup(n))+
+    '<br>星标：'+(n.stars||0).toLocaleString()+' · '+esc(n.maturity || '')+
+    (n.purpose? '<br><br>'+esc(n.purpose) : '');
   tip.style.opacity = 1; moveTip(e);
 }
 function moveTip(e){ tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; }
@@ -351,7 +423,7 @@ function applyHighlight(){
   const domainFilter = selId && String(selId).startsWith("D:") ? selId.slice(2) : null;
   window.__nodeEls.forEach(({g,n})=>{
     let on = true;
-    if(domainFilter) on = (n.domain===domainFilter);
+    if(domainFilter) on = (nodeGroup(n) === domainFilter);
     else if(nb!==null) on = (n.id===selId || nb.has(n.id));
     g.classList.toggle("dim", !on);
     g.classList.toggle("sel", n.id===selId);
@@ -359,7 +431,7 @@ function applyHighlight(){
   window.__edgeEls.forEach(({el,e})=>{
     let hot=false, on=true;
     if(domainFilter){
-      on = (byId[e.source].domain===domainFilter && byId[e.target].domain===domainFilter);
+      on = (nodeGroup(byId[e.source]) === domainFilter && nodeGroup(byId[e.target]) === domainFilter);
     } else if(nb!==null){
       on = (e.source===selId||e.target===selId);
       hot = on;
@@ -372,6 +444,14 @@ function applyHighlight(){
 document.getElementById("btn-reset").onclick = ()=>{
   selId = null; applyHighlight();
 };
+// 轴切换：换一维看同一批收藏
+document.querySelectorAll(".btn.ax").forEach(b => {
+  b.onclick = ()=>{
+    curAxis = b.getAttribute("data-axis");
+    selId = null;
+    applyAxis();
+  };
+});
 window.addEventListener("resize", ()=>{ resize(); });
 
 load();

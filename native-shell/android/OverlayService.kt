@@ -24,10 +24,6 @@ class OverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private var overlayView: View? = null
 
-    // 收集器在宿主机运行的地址。
-    // 模拟器用 10.0.2.2 回环到宿主机；真机改成电脑局域网 IP，如 http://192.168.x.x:8732
-    private val COLLECTOR_BASE = "http://10.0.2.2:8732"
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -59,8 +55,8 @@ class OverlayService : Service() {
         // 收集器是 http，允许 WebView 加载混合内容
         webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         webView.webViewClient = WebViewClient()
-        // 同源加载 host.html → ball.js 来自同一源，POST 自然打到 COLLECTOR_BASE/collect
-        webView.loadUrl("$COLLECTOR_BASE/host.html")
+        // 同源加载 host.html → ball.js 来自同一源，POST 自然打到收集器的 /collect
+        webView.loadUrl(CollectorConfig.HOST_HTML)
 
         windowManager.addView(overlayView, params)
     }

@@ -16,6 +16,7 @@
 """
 
 import os
+import re
 import json
 import datetime
 
@@ -316,6 +317,51 @@ def detect_tags(meta):
         low.add(t.lower())
     # 限长，便于图谱分面
     return tags[:8]
+
+
+# ---------- 技术栈取值归一化 ----------
+# 分工：卡片上的 tech_stack 保留原始值（细，给人看）；写入轴的取值做归一化（粗，给聚合用）。
+# 不归一化的话，同一个项目自己打的一串嵌套 topic（dsh / dsh-plugin / dsh-plugin-market）
+# 会把筛选胶囊云塞满，看不出真实分布。
+TECH_ALIASES = {
+    "js": "javascript", "ts": "typescript", "py": "python",
+    "node": "nodejs", "node-js": "nodejs", "golang": "go",
+    "k8s": "kubernetes", "postgres": "postgresql", "postgre": "postgresql",
+    "vuejs": "vue", "reactjs": "react", "nextjs": "next-js",
+    "tf": "tensorflow", "sklearn": "scikit-learn", "scikit": "scikit-learn",
+    "c++": "cpp", "c#": "csharp", "objective-c": "objc",
+}
+
+_TECH_SEP = re.compile(r"[\s_.]+")
+_TECH_DASH = re.compile(r"-{2,}")
+
+
+def normalize_tech(value):
+    """统一成可比较的形态：小写 + 分隔符归一 + 已知别名。"""
+    v = str(value or "").strip().lower()
+    if not v:
+        return ""
+    v = _TECH_SEP.sub("-", v).strip("-")
+    v = _TECH_DASH.sub("-", v)
+    return TECH_ALIASES.get(v, v)
+
+
+def collapse_tech_variants(values):
+    """把同一次归一化后「层层嵌套的前缀变体」合并到最短的那个。
+
+    例：dsh / dsh-plugin / dsh-plugin-market → dsh；deepseek / deepseek-harness → deepseek。
+    **只在同一个仓库内部合并**：跨仓库合并等于把不同东西捏到一起，那是编数据。
+    细粒度信息没有丢 —— 卡片上的 tech_stack 仍是原始值，轴只负责聚合。
+    """
+    norm, seen = [], set()
+    for v in values:
+        v = normalize_tech(v)
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        norm.append(v)
+    return [v for v in norm
+            if not any(o != v and v.startswith(o + "-") for o in norm)]
 
 
 def detect_tech_stack(meta):

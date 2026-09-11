@@ -169,6 +169,18 @@ h1{font-size:20px;letter-spacing:.2px}
 /* ---------- 空状态（有教育意义，弱化） ---------- */
 .empty{color:var(--muted);text-align:center;padding:40px 0;font-size:14px}
 
+/* ---------- 仓库更新反馈条（顶部，可关闭） ---------- */
+.upd-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:var(--accent-dim);border-bottom:1px solid var(--accent-line);
+  color:var(--ink);font-size:13px;padding:10px 14px;line-height:1.4}
+.upd-banner .upd-t{font-weight:600;white-space:nowrap}
+.upd-banner .upd-list{flex:1;min-width:150px;color:var(--muted)}
+.upd-banner a.upd-go{color:var(--accent);cursor:pointer;text-decoration:underline;white-space:nowrap}
+.upd-banner a.upd-go:hover{color:var(--accent-2)}
+
+/* ---------- 卡片「有更新」角标 ---------- */
+.pill.upd{color:var(--warn);background:rgba(224,168,75,.14);border-color:rgba(224,168,75,.40)}
+
 /* ---------- 桌面端布局（图谱页） ---------- */
 .graph-wrap{border-right:1px solid var(--line)}
 svg{background:radial-gradient(circle at 50% 40%, #FFFFFF 0%, var(--bg) 72%);touch-action:none}

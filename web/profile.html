@@ -86,6 +86,12 @@
 </section>
 
 <section class="card">
+  <div class="sec-h">后来的事</div>
+  <div class="sec-note">你自己标的「用过 / 弃了 / 还想用」。这一页上其它都是推断，只有这一块是记录——成熟度量的是项目的江湖地位，只有它量的是你。</div>
+  <div class="chips" id="feedback"></div>
+</section>
+
+<section class="card">
   <div class="sec-h">你是怎么收的</div>
   <div class="sec-note">主动寻找 = 你带着目的去搜；随手刷到 = 刷视频/信息流时顺手收。比例能看出是「按需」还是「被投喂」。</div>
   <div class="chips" id="motive"></div>
@@ -154,6 +160,15 @@ async function load(){
   $('sources').innerHTML = skeys.length ? skeys.map(function(k){
     return '<span class="chip">'+escAttr(SRC_LABEL[k] || k)+' <b>'+sd[k]+'</b></span>';
   }).join('') : '<div class="empty">暂无来源数据。</div>';
+
+  // 使用反馈（唯一不靠推断的一层）
+  var fb = p.feedback || [];
+  $('feedback').innerHTML = fb.length
+    ? fb.map(function(f){
+        return '<span class="chip">'+escAttr(f.name)+' <b>'+f.count+'</b></span>';
+      }).join('')
+      + '<div class="empty" style="padding:8px 0 0">已标 '+p.feedback_total+' 条 / 共 '+p.total+' 条。剩下的去卡片页随手点一下。</div>'
+    : '<div class="empty">还没标过。去卡片页给收过的仓库点「用过 / 弃了 / 还想用」——这一页上其它都是推断，只有这块是记录。</div>';
 
   // 成熟度（匹配 analyze.detect_maturity 的真实取值：顶级/成熟/活跃/新兴/未知）
   function matCls(name){

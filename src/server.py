@@ -39,6 +39,11 @@ PORT = config.PORT
 # 收藏来源（谁把它放进来的）。推荐页必须带上，画像才知道「有多少是别人喂的」。
 SOURCES = {"manual", "recommend", "trend", "share", "bookmark", "ball", "import"}
 
+# 「后来怎么样了」：用过 / 弃了 / 还想用。
+# 为什么不复用卡片的成熟度：那是按 stars 分桶，讲的是项目的江湖地位，不是你用得多不多。
+# 这是整个画像里唯一不靠推测、纯靠你动手反馈的一层。
+FEEDBACK = {"used": "用过", "dropped": "弃了", "want": "还想用"}
+
 CTYPES = {
     ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
     ".json": "application/json", ".svg": "image/svg+xml", ".txt": "text/plain",
@@ -64,6 +69,24 @@ def init_db():
     # 增量列：走 ensure_column（读 table_info 判断），不再用「ALTER 失败就 pass」猜
     db.ensure_column(conn, "repos", "card", "TEXT")
     db.ensure_column(conn, "repos", "source", "TEXT DEFAULT 'manual'")
+    db.ensure_column(conn, "repos", "feedback", "TEXT")
+    db.ensure_column(conn, "repos", "last_checked_at", "TEXT")
+    # 仓库更新事件：本地比对新旧 GitHub 元数据后落下的变化，供前端做「反馈消息」。
+    # seen=0 表示用户还没看；反复检查不会重复刷屏（同仓同类型未读事件只保留最新一条）。
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS repo_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            old_val TEXT,
+            new_val TEXT,
+            summary TEXT,
+            created_at TEXT,
+            seen INTEGER DEFAULT 0
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_repo_events_repo ON repo_events (repo_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_repo_events_seen ON repo_events (seen)")
     # 多轴数据模型（多维同步存储与检索的根）
     c.execute("CREATE TABLE IF NOT EXISTS axes (key TEXT PRIMARY KEY, name TEXT NOT NULL)")
     c.execute(
@@ -89,6 +112,7 @@ def init_db():
     for k, n in (
         ("domain", "领域"), ("tech", "技术栈"), ("scene", "使用场景"),
         ("gap", "认知缺角"), ("motive", "收藏动机"), ("timeline", "时间线"),
+        ("use", "使用结果"),
     ):
         c.execute("INSERT OR IGNORE INTO axes (key, name) VALUES (?, ?)", (k, n))
     db.set_schema_version(conn, db.SCHEMA_VERSION)
@@ -459,7 +483,7 @@ def get_profile():
     conn = db.connect()
     c = conn.cursor()
     c.execute(
-        "SELECT id,url,note,status,meta,card,created_at,COALESCE(source,'manual') "
+        "SELECT id,url,note,status,meta,card,created_at,COALESCE(source,'manual'),feedback "
         "FROM repos ORDER BY id"
     )
     rows = c.fetchall()
@@ -485,8 +509,9 @@ def get_profile():
     sources = {}
     carded = 0
     motive_dist = {}
+    feedback_dist = {}
 
-    for rid, url, note, status, rmeta_s, rcard_s, created_at, src in rows:
+    for rid, url, note, status, rmeta_s, rcard_s, created_at, src, fb in rows:
         try:
             card = json.loads(rcard_s) if rcard_s else None
         except Exception:
@@ -519,6 +544,8 @@ def get_profile():
         sources[src] = sources.get(src, 0) + 1
         if src == "recommend":
             from_recommend += 1
+        if fb in FEEDBACK:
+            feedback_dist[fb] = feedback_dist.get(fb, 0) + 1
 
     domain_list = sorted(
         [{"name": k, "count": v} for k, v in domains.items()], key=lambda x: -x["count"])
@@ -556,6 +583,9 @@ def get_profile():
         "maturity": maturity_list,
         "motive_dist": motive_dist,
         "sources": sources,
+        "feedback": [{"key": k, "name": FEEDBACK[k], "count": v}
+                     for k, v in sorted(feedback_dist.items(), key=lambda x: -x[1])],
+        "feedback_total": sum(feedback_dist.values()),
         "timeline_days": [{"date": d, "count": n} for d, n in day_list],
         "active_slots": slots,
         "notes_with_src": notes_with_src,
@@ -581,6 +611,8 @@ def query_axes(filters, conn=None):
         return ids
     result = None
     for axis_key, value in filters:
+        if axis_key == "tech":
+            value = analyze.normalize_tech(value)
         c.execute("SELECT repo_id FROM repo_axis WHERE axis_key=? AND value=?", (axis_key, value))
         s = {r[0] for r in c.fetchall()}
         result = s if result is None else (result & s)
@@ -594,7 +626,8 @@ def get_cards(filters, conn=None):
     own = conn is None
     conn = conn or db.connect()
     c = conn.cursor()
-    c.execute("SELECT id,url,note,status,meta,card,created_at FROM repos ORDER BY id DESC")
+    c.execute("SELECT id,url,note,status,meta,card,created_at,feedback "
+              "FROM repos ORDER BY id DESC")
     rows = c.fetchall()
     c.execute("SELECT repo_id, axis_key, value FROM repo_axis")
     axis_rows = c.fetchall()
@@ -605,11 +638,18 @@ def get_cards(filters, conn=None):
     for rid, ak, val in axis_rows:
         axes_by_repo.setdefault(rid, {}).setdefault(ak, []).append(val)
 
+    def axis_value_filter(axis_key, value):
+        """tech 轴的取值写入前被归一化过（小写/分隔符/别名），筛选时必须走同一套，
+        否则用户手敲 "Python" 匹配不到轴里的 "python"。其它轴原样比较 ——
+        领域名含中文与「·」，不该被改写。"""
+        return analyze.normalize_tech(value) if axis_key == "tech" else value
+
     def match_layer(rid, axis_key, wanted):
         if not wanted:
             return True
         have = axes_by_repo.get(rid, {}).get(axis_key, [])
-        return any(w in have for w in wanted)
+        want = [axis_value_filter(axis_key, w) for w in wanted]
+        return any(w in have for w in want)
 
     def match_q(it, q):
         q = q.lower()
@@ -632,12 +672,14 @@ def get_cards(filters, conn=None):
         except Exception:
             meta, card = None, None
         it = {"id": r[0], "url": r[1], "note": r[2], "status": r[3],
-              "meta": meta, "card": card, "created_at": r[6]}
+              "meta": meta, "card": card, "created_at": r[6], "feedback": r[7]}
         if not match_layer(it["id"], "domain", filters.get("domain", [])):
             continue
         if not match_layer(it["id"], "tech", filters.get("tech", [])):
             continue
         if not match_layer(it["id"], "motive", filters.get("motive", [])):
+            continue
+        if not match_layer(it["id"], "use", filters.get("use", [])):
             continue
         if filters.get("q") and not match_q(it, filters["q"]):
             continue
@@ -742,7 +784,7 @@ def fetch_github_meta(path):
         return {"error": str(e)}
 
 
-def sync_axes(conn, rid, card, note, meta, use_llm=True):
+def sync_axes(conn, rid, card, note, meta, use_llm=True, feedback=None):
     """把卡片 + 备注同步写入多轴表（repo_axis / tags）。多维存储的唯一落点。
 
     来源与置信度跟随 card["source"]：LLM 分析出的领域，不该在轴表里被记成
@@ -772,7 +814,10 @@ def sync_axes(conn, rid, card, note, meta, use_llm=True):
     domain = (card or {}).get("domain")
     if domain and domain != "未分类":
         put("domain", domain, 1.0, src, conf)
-    for i, t in enumerate((card or {}).get("tech_stack", [])[:6]):
+    # 技术栈轴：写入前归一化（大小写/分隔符/别名 + 同仓内嵌套变体合并）。
+    # 轴是聚合用的，取粗；卡片上的 tech_stack 仍是原始值，取细。
+    techs = analyze.collapse_tech_variants((card or {}).get("tech_stack", [])[:8])
+    for i, t in enumerate(techs[:6]):
         put("tech", t, round(0.5 - i * 0.05, 2), src, max(0.3, round(conf - 0.1, 2)))
     maturity = (card or {}).get("maturity")
     if maturity:
@@ -798,6 +843,10 @@ def sync_axes(conn, rid, card, note, meta, use_llm=True):
                 put("scene", "临时调研", 1.0, "user", 0.9)
     else:
         put("motive", "随手刷到", 1.0, "user", 0.9)
+    # 使用结果轴：用户自己点的「用过/弃了/还想用」，来源与置信度都拉满 ——
+    # 这是唯一不靠推测的一层，重建时由 reindex 从 repos.feedback 原样带回。
+    if feedback in FEEDBACK:
+        put("use", FEEDBACK[feedback], 1.0, "user", 1.0)
     for t in (card or {}).get("tags", []):
         c.execute("INSERT OR IGNORE INTO tags (repo_id, tag) VALUES (?, ?)", (rid, t))
     conn.commit()
@@ -907,10 +956,10 @@ def reindex_axes():
     """
     conn = db.connect()
     c = conn.cursor()
-    c.execute("SELECT id, note, meta, card FROM repos WHERE card IS NOT NULL")
+    c.execute("SELECT id, note, meta, card, feedback FROM repos WHERE card IS NOT NULL")
     rows = c.fetchall()
     n = 0
-    for rid, note, meta_s, card_s in rows:
+    for rid, note, meta_s, card_s, feedback in rows:
         try:
             card = json.loads(card_s) if card_s else None
             meta = json.loads(meta_s) if meta_s else {}
@@ -918,10 +967,188 @@ def reindex_axes():
             continue
         if not card:
             continue
-        sync_axes(conn, rid, card, note, meta, use_llm=False)
+        sync_axes(conn, rid, card, note, meta, use_llm=False, feedback=feedback)
         n += 1
     conn.commit()
     conn.close()
+    return n
+
+
+def set_feedback(rid, feedback):
+    """记录「后来怎么样了」。再点一次同一个值 = 取消。
+
+    feedback 同时写进 repos 列与 use 轴：列是事实，轴是为了能和其他轴交叉筛选
+    （比如「用过 且 AI·LLM」），这正是多轴模型该干的事。
+    """
+    if feedback not in FEEDBACK:
+        return (400, {"ok": False, "error": "feedback 只能是 used / dropped / want"})
+    conn = db.connect()
+    c = conn.cursor()
+    c.execute("SELECT note, meta, card, feedback FROM repos WHERE id=?", (rid,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return (404, {"ok": False, "error": "not found"})
+    note, meta_s, card_s, old = row
+    try:
+        meta = json.loads(meta_s) if meta_s else {}
+        card = json.loads(card_s) if card_s else None
+    except Exception:
+        meta, card = {}, None
+    if old == feedback:   # 再点一次同一个值表示取消
+        feedback = None
+    c.execute("UPDATE repos SET feedback=? WHERE id=?", (feedback, rid))
+    sync_axes(conn, rid, card, note, meta, use_llm=False, feedback=feedback)
+    conn.commit()
+    conn.close()
+    return (200, {"ok": True, "id": rid, "feedback": feedback})
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  仓库更新检测：本地比对 GitHub 元数据，把变化落成「事件」做反馈消息
+# ═══════════════════════════════════════════════════════════════════
+# 这个能力最划算：meta 里本来就存了 stars / description / pushed_at / language，
+# fetch_github_meta 也现成。重拉一遍做 diff，比「写死共现表」那类臆测诚实得多。
+# 节流：非强制检查时，24h 内检查过的仓库跳过（GitHub 未登录限速 60 次/时）。
+UPDATE_CHECK_INTERVAL_HOURS = 24
+
+
+def _meta_path(url):
+    """从收藏的原始 url 判断是不是 GitHub 仓库，是则返回 owner/repo。
+
+    以 url 的 host 为准（而非 meta 内容），避免把 gitlab 等误判成 GitHub。
+    """
+    try:
+        p = urlparse(url)
+        if p.netloc.lower() == "github.com":
+            parts = [x for x in p.path.split("/") if x]
+            if len(parts) >= 2:
+                return parts[0] + "/" + parts[1]
+    except Exception:
+        pass
+    return None
+
+
+def _diff_meta(old, fresh):
+    """比对两份 GitHub meta，返回变化清单（每个变化带人类可读 summary）。"""
+    diffs = []
+    o_s, n_s = old.get("stars"), fresh.get("stars")
+    if isinstance(o_s, int) and isinstance(n_s, int) and n_s > o_s:
+        diffs.append({
+            "kind": "stars", "old": str(o_s), "new": str(n_s),
+            "summary": "星标 %d → %d（+%d）" % (o_s, n_s, n_s - o_s),
+        })
+    o_p, n_p = old.get("pushed_at"), fresh.get("pushed_at")
+    if o_p and n_p and n_p > o_p:
+        diffs.append({
+            "kind": "push", "old": o_p, "new": n_p,
+            "summary": "有新提交（%s）" % n_p[:10],
+        })
+    if (old.get("description") or "") != (fresh.get("description") or ""):
+        diffs.append({
+            "kind": "desc", "old": (old.get("description") or "")[:40],
+            "new": (fresh.get("description") or "")[:40],
+            "summary": "仓库简介已更新",
+        })
+    o_l, n_l = old.get("language"), fresh.get("language")
+    if (o_l or n_l) and o_l != n_l:
+        diffs.append({
+            "kind": "lang", "old": o_l or "无", "new": n_l or "无",
+            "summary": "主语言：%s → %s" % (o_l or "无", n_l or "无"),
+        })
+    return diffs
+
+
+def check_repo_updates(conn=None, fetch_fn=None, force=False):
+    """重拉每个仓库的 GitHub 元数据并做 diff，把变化写成 repo_events。
+
+    - fetch_fn 可注入（测试用假数据，不联网）。
+    - 节流：非强制且 24h 内已检查过则跳过该仓库。
+    - 限速/离线（fetch 返回 error）不更新 last_checked_at，便于稍后重试。
+    - 同仓同类型未读事件只保留最新一条，避免反复检查刷屏。
+    返回 {"checked": 实际联网检查数, "events": 本次新写下的事件}。
+    """
+    own = conn is None
+    if own:
+        conn = db.connect()
+    fetch_fn = fetch_fn or fetch_github_meta
+    c = conn.cursor()
+    c.execute("SELECT id, url, meta FROM repos WHERE card IS NOT NULL")
+    rows = c.fetchall()
+    events = []
+    checked = 0
+    ts = now()
+    for rid, url, meta_s in rows:
+        try:
+            meta = json.loads(meta_s) if meta_s else {}
+        except Exception:
+            meta = {}
+        path = _meta_path(url)
+        if not path:
+            continue
+        if not force:
+            last = c.execute(
+                "SELECT last_checked_at FROM repos WHERE id=?", (rid,)).fetchone()[0]
+            if last:
+                try:
+                    dt = datetime.datetime.fromisoformat(last)
+                    if (datetime.datetime.now() - dt).total_seconds() < \
+                            UPDATE_CHECK_INTERVAL_HOURS * 3600:
+                        continue
+                except Exception:
+                    pass
+        try:
+            fresh = fetch_fn(path)
+        except Exception:
+            fresh = {"error": "fetch failed"}
+        if not isinstance(fresh, dict) or fresh.get("error"):
+            continue  # 限速/离线：不更新 last_checked，稍后重试
+        checked += 1
+        for d in _diff_meta(meta, fresh):
+            # 同仓同类型未读事件只留最新一条
+            c.execute("DELETE FROM repo_events WHERE repo_id=? AND kind=? AND seen=0",
+                      (rid, d["kind"]))
+            c.execute(
+                "INSERT INTO repo_events (repo_id,kind,old_val,new_val,summary,created_at,seen) "
+                "VALUES (?,?,?,?,?,?,0)",
+                (rid, d["kind"], d["old"], d["new"], d["summary"], ts))
+            events.append({"repo_id": rid, "kind": d["kind"], "summary": d["summary"]})
+        c.execute("UPDATE repos SET meta=?, last_checked_at=? WHERE id=?",
+                  (json.dumps(fresh, ensure_ascii=False), ts, rid))
+    conn.commit()
+    if own:
+        conn.close()
+    return {"checked": checked, "events": events}
+
+
+def get_updates(conn=None):
+    """返回未读事件（含仓库 url，便于前端跳转）。"""
+    own = conn is None
+    if own:
+        conn = db.connect()
+    c = conn.cursor()
+    c.execute(
+        "SELECT e.id, e.repo_id, e.kind, e.summary, e.created_at, r.url "
+        "FROM repo_events e JOIN repos r ON r.id=e.repo_id "
+        "WHERE e.seen=0 ORDER BY e.created_at DESC, e.id DESC")
+    evs = [{"id": eid, "repo_id": rid, "kind": kind, "summary": summary,
+            "created_at": created, "url": url}
+           for eid, rid, kind, summary, created, url in c.fetchall()]
+    last = (c.execute("SELECT MAX(last_checked_at) FROM repos").fetchone() or [None])[0]
+    if own:
+        conn.close()
+    return {"count": len(evs), "events": evs, "last_checked_at": last}
+
+
+def mark_updates_seen(conn=None):
+    """把全部未读事件标记为已读。返回标记条数。"""
+    own = conn is None
+    if own:
+        conn = db.connect()
+    n = conn.execute("UPDATE repo_events SET seen=1 WHERE seen=0").rowcount
+    conn.commit()
+    if own:
+        conn.close()
     return n
 
 
@@ -953,8 +1180,10 @@ def doctor():
     try:
         journal = c.execute("PRAGMA journal_mode").fetchone()[0]
         freelist = c.execute("PRAGMA freelist_count").fetchone()[0]
+        events_unseen = c.execute(
+            "SELECT COUNT(*) FROM repo_events WHERE seen=0").fetchone()[0]
     except Exception:
-        journal, freelist = "?", 0
+        journal, freelist, events_unseen = "?", 0, 0
     conn.close()
 
     try:
@@ -967,6 +1196,7 @@ def doctor():
         "cards": len(rows),
         "axis_mismatch": mismatches,
         "axis_missing": no_axis,
+        "events_unseen": events_unseen,
         "llm": analyze.llm_status(),
         "db": {
             "path": config.DB, "schema_version": db.SCHEMA_VERSION,
@@ -1162,14 +1392,16 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/cards":
             items = get_cards({
                 "domain": qs.get("domain", []), "tech": qs.get("tech", []),
-                "motive": qs.get("motive", []),
+                "motive": qs.get("motive", []), "use": qs.get("use", []),
                 "q": (qs.get("q", [""])[0] or "").strip(),
                 "sort": (qs.get("sort", [""])[0] or "").strip(),
             })
             self._send(200, {"count": len(items), "items": items})
         elif path == "/api/facets":
             f = get_axis_facets()
-            visible = {k: f[k] for k in ("domain", "tech", "motive") if k in f and f[k]}
+            # 只暴露有数据的层（domain/tech/motive/use），隐藏稀疏/内部轴
+            visible = {k: f[k] for k in ("domain", "tech", "motive", "use")
+                       if k in f and f[k]}
             self._send(200, visible)
         elif path == "/api/query":
             axes, values = qs.get("axis", []), qs.get("value", [])
@@ -1202,6 +1434,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, get_profile())
         elif path == "/api/doctor":
             self._send(200, doctor())
+        elif path == "/api/updates":
+            self._send(200, get_updates())
         else:
             self._send(404, {"error": "not found"})
 
@@ -1212,11 +1446,11 @@ class Handler(BaseHTTPRequestHandler):
         if q:
             like = "%" + q + "%"
             c.execute(
-                """SELECT id,url,note,status,meta,card,created_at FROM repos
+                """SELECT id,url,note,status,meta,card,created_at,feedback FROM repos
                    WHERE url LIKE ? OR note LIKE ? OR meta LIKE ? OR card LIKE ?
                    ORDER BY id DESC LIMIT 50""", (like, like, like, like))
         else:
-            c.execute("SELECT id,url,note,status,meta,card,created_at FROM repos "
+            c.execute("SELECT id,url,note,status,meta,card,created_at,feedback FROM repos "
                       "ORDER BY id DESC LIMIT 50")
         rows = c.fetchall()
         conn.close()
@@ -1228,7 +1462,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 meta, card = None, None
             items.append({"id": r[0], "url": r[1], "note": r[2], "status": r[3],
-                          "meta": meta, "card": card, "created_at": r[6]})
+                          "meta": meta, "card": card, "created_at": r[6], "feedback": r[7]})
         return {"items": items, "q": q}
 
     # ---------- POST ----------
@@ -1261,6 +1495,40 @@ class Handler(BaseHTTPRequestHandler):
                 return
             n = reindex_axes()
             self._send(200, {"ok": True, "rebuild": n})
+            return
+        if p == "/api/item/feedback":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            payload, err = self._read_json()
+            if err != 200:
+                self._send(err, {"ok": False,
+                                 "error": "bad json" if err == 400 else "body too large"})
+                return
+            try:
+                rid = int(payload.get("id"))
+            except (TypeError, ValueError):
+                self._send(400, {"ok": False, "error": "bad id"})
+                return
+            self._send(*set_feedback(rid, payload.get("feedback")))
+            return
+        if p == "/api/updates/check":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            res = check_repo_updates(force=True)
+            self._send(200, {"ok": True, "checked": res["checked"],
+                             "new_events": len(res["events"])})
+            return
+        if p == "/api/updates/seen":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            n = mark_updates_seen()
+            self._send(200, {"ok": True, "seen": n})
             return
         if p != "/collect":
             self._send(404, {"error": "not found"})

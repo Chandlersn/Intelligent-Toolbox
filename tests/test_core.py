@@ -153,7 +153,8 @@ class TestAxesSync(Base):
         self.assertEqual(self.axis_value(rid, "domain"), "AI·LLM")
         self.assertEqual(self.axis_value(rid, "timeline"), "成熟")
         techs = [r[1] for r in self.axis_rows(rid) if r[0] == "tech"]
-        self.assertEqual(sorted(techs), ["Python", "pytorch"])
+        # 轴上的技术栈经过归一化（小写），卡片上的 tech_stack 仍保留原始大小写
+        self.assertEqual(sorted(techs), ["python", "pytorch"])
 
     def test_provenance_follows_card_source_llm(self):
         """P0-2 回归：LLM 分析的卡片，轴表不能标成 heuristic。"""
@@ -202,6 +203,128 @@ class TestAxesSync(Base):
         server.sync_axes(conn, rid, {"domain": "安全", "source": "heuristic"}, None, {}, use_llm=False)
         conn.close()
         self.assertEqual(self.axis_value(rid, "motive"), "随手刷到")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  4b. 技术栈归一化（轴用于聚合，取粗；卡片用于展示，取细）
+# ═══════════════════════════════════════════════════════════════════
+class TestTechNormalization(Base):
+    def test_case_and_separators(self):
+        self.assertEqual(analyze.normalize_tech("TypeScript"), "typescript")
+        self.assertEqual(analyze.normalize_tech("node_js"), "nodejs")
+        self.assertEqual(analyze.normalize_tech("Node JS"), "nodejs")
+        self.assertEqual(analyze.normalize_tech("  Go  "), "go")
+
+    def test_aliases(self):
+        self.assertEqual(analyze.normalize_tech("JS"), "javascript")
+        self.assertEqual(analyze.normalize_tech("golang"), "go")
+        self.assertEqual(analyze.normalize_tech("k8s"), "kubernetes")
+
+    def test_collapses_nested_variants_within_one_repo(self):
+        """同一项目打的层层嵌套 topic 应合并到最短那个，否则胶囊云会被塞满。"""
+        out = analyze.collapse_tech_variants(
+            ["dsh", "dsh-plugin", "dsh-plugin-market", "TypeScript"])
+        self.assertEqual(sorted(out), ["dsh", "typescript"])
+
+    def test_does_not_merge_across_unrelated(self):
+        out = analyze.collapse_tech_variants(["Python", "Go", "Rust"])
+        self.assertEqual(sorted(out), ["go", "python", "rust"])
+
+    def test_axis_stores_collapsed_value(self):
+        rid = self.add_repo("https://github.com/a/b")
+        card = {"domain": "前端/UI", "source": "heuristic",
+                "tech_stack": ["dsh", "dsh-plugin", "dsh-plugin-market", "TypeScript"]}
+        conn = db.connect()
+        server.sync_axes(conn, rid, card, None, {}, use_llm=False)
+        conn.close()
+        techs = sorted(r[1] for r in self.axis_rows(rid) if r[0] == "tech")
+        self.assertEqual(techs, ["dsh", "typescript"])
+
+    def test_filter_tolerates_original_casing(self):
+        """用户手敲原始大小写也要能筛到（轴里存的是归一化后的值）。"""
+        rid = self.add_repo("https://github.com/a/b")
+        card = {"domain": "AI·LLM", "tech_stack": ["Python"], "source": "heuristic"}
+        conn = db.connect()
+        server.sync_axes(conn, rid, card, None, {}, use_llm=False)
+        conn.close()
+        self.assertEqual(server.query_axes([("tech", "Python")]), {rid})
+        self.assertEqual(server.query_axes([("tech", "python")]), {rid})
+        self.assertEqual(
+            [i["id"] for i in server.get_cards(
+                {"domain": [], "tech": ["Python"], "motive": [], "use": []})], [rid])
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  4c. 使用反馈（用过 / 弃了 / 还想用）
+# ═══════════════════════════════════════════════════════════════════
+class TestFeedback(Base):
+    def _make(self, suffix="b"):
+        rid = self.add_repo("https://github.com/a/" + suffix,
+                            meta={"name": "a/b"},
+                            card={"domain": "安全", "tech_stack": ["Go"],
+                                  "source": "heuristic"})
+        conn = db.connect()
+        server.sync_axes(conn, rid, {"domain": "安全", "tech_stack": ["Go"],
+                                     "source": "heuristic"}, None, {}, use_llm=False)
+        conn.close()
+        return rid
+
+    def test_set_feedback_writes_column_and_axis(self):
+        rid = self._make()
+        code, body = server.set_feedback(rid, "used")
+        self.assertEqual(code, 200)
+        conn = db.connect()
+        col = conn.execute("SELECT feedback FROM repos WHERE id=?", (rid,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(col, "used")
+        self.assertEqual(self.axis_value(rid, "use"), "用过")
+
+    def test_feedback_axis_is_user_sourced(self):
+        rid = self._make()
+        server.set_feedback(rid, "want")
+        row = [r for r in self.axis_rows(rid) if r[0] == "use"][0]
+        self.assertEqual(row[2], "user")
+        self.assertEqual(row[3], 1.0)
+
+    def test_clicking_same_value_cancels(self):
+        rid = self._make()
+        server.set_feedback(rid, "used")
+        code, body = server.set_feedback(rid, "used")
+        self.assertEqual(code, 200)
+        self.assertIsNone(body["feedback"])
+        self.assertIsNone(self.axis_value(rid, "use"))
+
+    def test_invalid_value_rejected(self):
+        rid = self._make()
+        code, body = server.set_feedback(rid, "maybe")
+        self.assertEqual(code, 400)
+
+    def test_missing_repo(self):
+        code, body = server.set_feedback(99999, "used")
+        self.assertEqual(code, 404)
+
+    def test_reindex_preserves_feedback(self):
+        rid = self._make()
+        server.set_feedback(rid, "dropped")
+        server.reindex_axes()
+        self.assertEqual(self.axis_value(rid, "use"), "弃了")
+
+    def test_profile_counts_feedback(self):
+        a, b = self._make("x"), self._make("y")
+        server.set_feedback(a, "used")
+        server.set_feedback(b, "dropped")
+        p = server.get_profile()
+        by_key = {f["key"]: f["count"] for f in p["feedback"]}
+        self.assertEqual(by_key.get("used"), 1)
+        self.assertEqual(by_key.get("dropped"), 1)
+        self.assertEqual(p["feedback_total"], 2)
+
+    def test_cards_filter_by_use_axis(self):
+        a, b = self._make("x"), self._make("y")
+        server.set_feedback(a, "used")
+        ids = [i["id"] for i in server.get_cards(
+            {"domain": [], "tech": [], "motive": [], "use": ["用过"]})]
+        self.assertEqual(ids, [a])
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -482,6 +605,79 @@ class TestGapHonesty(Base):
                                    "source": "heuristic"}, None, {}, use_llm=False)
         conn.close()
         self.assertEqual(server.get_graph()["domain_links"], [])
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  仓库更新检测（不联网：用注入的假 fetch 验证 diff / 幂等 / 节流 / 已读）
+# ═══════════════════════════════════════════════════════════════════
+class TestUpdates(Base):
+    def _seed(self, meta):
+        return self.add_repo("https://github.com/o/r",
+                             meta=meta, card={"domain": "AI·LLM", "source": "heuristic"})
+
+    def _meta(self, rid):
+        conn = db.connect()
+        row = conn.execute("SELECT meta FROM repos WHERE id=?", (rid,)).fetchone()
+        conn.close()
+        return json.loads(row[0]) if row and row[0] else {}
+
+    def test_detects_four_kinds(self):
+        rid = self._seed({"name": "o/r", "stars": 10, "pushed_at": "2024-01-01",
+                          "description": "old", "language": "Python"})
+        def fake(path):
+            return {"name": path, "stars": 20, "pushed_at": "2026-09-01",
+                    "description": "new", "language": "Rust"}
+        res = server.check_repo_updates(fetch_fn=fake, force=True)
+        self.assertEqual(res["checked"], 1)
+        self.assertEqual(len(res["events"]), 4)  # stars / push / desc / lang
+        self.assertEqual(server.get_updates()["count"], 4)
+        self.assertEqual(self._meta(rid)["stars"], 20)  # 基线已刷新
+
+    def test_idempotent_on_recheck(self):
+        rid = self._seed({"name": "o/r", "stars": 10, "pushed_at": "2024-01-01",
+                          "description": "old", "language": "Python"})
+        def fake(path):
+            return {"name": path, "stars": 20, "pushed_at": "2026-09-01",
+                    "description": "new", "language": "Rust"}
+        server.check_repo_updates(fetch_fn=fake, force=True)
+        server.check_repo_updates(fetch_fn=fake, force=True)  # meta 已是 fresh，无新变化
+        self.assertEqual(server.get_updates()["count"], 4)
+
+    def test_keeps_only_latest_unseen_per_kind(self):
+        rid = self._seed({"name": "o/r", "stars": 10})
+        server.check_repo_updates(fetch_fn=lambda p: {"name": p, "stars": 20}, force=True)
+        server.check_repo_updates(fetch_fn=lambda p: {"name": p, "stars": 30}, force=True)
+        conn = db.connect()
+        rows = conn.execute(
+            "SELECT old_val,new_val FROM repo_events WHERE repo_id=? AND kind='stars' AND seen=0",
+            (rid,)).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], "30")
+
+    def test_skips_non_github(self):
+        self.add_repo("https://gitlab.com/o/r", meta={"name": "gitlab-o/r"},
+                      card={"domain": "x", "source": "heuristic"})
+        res = server.check_repo_updates(
+            fetch_fn=lambda p: {"name": p, "stars": 99}, force=True)
+        self.assertEqual(res["checked"], 0)
+
+    def test_interval_throttle_skips_recent(self):
+        rid = self._seed({"name": "o/r", "stars": 10})
+        conn = db.connect()
+        conn.execute("UPDATE repos SET last_checked_at=? WHERE id=?", (server.now(), rid))
+        conn.commit()
+        conn.close()
+        res = server.check_repo_updates(
+            fetch_fn=lambda p: {"name": p, "stars": 20}, force=False)
+        self.assertEqual(res["checked"], 0)
+
+    def test_mark_seen(self):
+        rid = self._seed({"name": "o/r", "stars": 10})
+        server.check_repo_updates(fetch_fn=lambda p: {"name": p, "stars": 20}, force=True)
+        self.assertEqual(server.get_updates()["count"], 1)
+        self.assertEqual(server.mark_updates_seen(), 1)
+        self.assertEqual(server.get_updates()["count"], 0)
 
 
 if __name__ == "__main__":
