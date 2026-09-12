@@ -113,6 +113,7 @@
     <div class="legend-k"><span class="sw"></span>生产端 ↔ 认知端 桥接</div>
     <div class="legend-k"><span class="dot"></span>认知端节点（抖音等内容）</div>
     <div class="note">生产端节点为实心圆；认知端节点外圈加虚线环。</div>
+  <div class="note">拖动节点可手动摆位，布局会被记住；点「重置视图」可重新散开。</div>
   </aside>
 </div>
 
@@ -157,6 +158,20 @@ let nodes = [], edges = [], byId = {}, W = 0, H = 0, alpha = 1, selId = null;
 function resize(){
   const r = svg.getBoundingClientRect();
   W = r.width; H = r.height;
+}
+
+// 拖拽布局记忆：把节点坐标存进 localStorage，重开页面 / 切换轴都保持用户摆好的样子。
+const POS_KEY = "repo_map_pos";
+function savePositions(){
+  try {
+    const o = {};
+    nodes.forEach(n => { o[n.id] = {x: Math.round(n.x), y: Math.round(n.y)}; });
+    localStorage.setItem(POS_KEY, JSON.stringify(o));
+  } catch(e){}
+}
+function loadPositions(){
+  try { return JSON.parse(localStorage.getItem(POS_KEY) || "{}") || {}; }
+  catch(e){ return {}; }
 }
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
@@ -304,10 +319,16 @@ function initGraph(){
   resize();
   // 清空
   while(svg.firstChild) svg.removeChild(svg.firstChild);
-  // 初始化位置
+  // 初始化位置：有记忆就还原，没有再随机散开
+  const saved = loadPositions();
   nodes.forEach((n,i)=>{
-    n.x = W/2 + Math.cos(i)*120 + (Math.random()-0.5)*60;
-    n.y = H/2 + Math.sin(i)*120 + (Math.random()-0.5)*60;
+    const s = saved[n.id];
+    if(s && typeof s.x === "number" && typeof s.y === "number"){
+      n.x = s.x; n.y = s.y;
+    } else {
+      n.x = W/2 + Math.cos(i)*120 + (Math.random()-0.5)*60;
+      n.y = H/2 + Math.sin(i)*120 + (Math.random()-0.5)*60;
+    }
     n.vx = 0; n.vy = 0;
     n.r = 7 + Math.min(12, Math.log10((n.stars||1)+1)*3.4);
     n.fixed = false;
@@ -422,7 +443,7 @@ function bindNode(g, n){
     if(Math.abs(x-n.x)>3||Math.abs(y-n.y)>3) moved=true;
     n.x=x; n.y=y;
   };
-  const up = ()=>{ n.fixed=false; if(!moved) select(n.id); };
+  const up = ()=>{ n.fixed=false; if(moved) savePositions(); if(!moved) select(n.id); };
 
   g.addEventListener("mousedown", e=>{ e.preventDefault(); down(e.clientX,e.clientY); });
   window.addEventListener("mousemove", e=>{ if(n.fixed) move(e.clientX,e.clientY); });
@@ -483,6 +504,8 @@ function applyHighlight(){
 
 document.getElementById("btn-reset").onclick = ()=>{
   selId = null; applyHighlight();
+  // 同时清掉拖拽记忆，给一个重新散开的出口（布局乱了就点这里）
+  try { localStorage.removeItem(POS_KEY); } catch(e){}
 };
 // 轴切换：换一维看同一批收藏
 document.querySelectorAll(".btn.ax").forEach(b => {
