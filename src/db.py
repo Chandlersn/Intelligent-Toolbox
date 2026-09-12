@@ -19,7 +19,8 @@ import config
 # 每次新增列/表都要 +1，并在 init_db() 里写一步幂等迁移。
 # v1 初始 · v2 加 repos.source + 索引 · v3 加 repos.feedback 与 use 轴
 # v4 加 repo_events 表 + repos.last_checked_at（仓库更新检测）
-SCHEMA_VERSION = 4
+# v5 加 repos.kind（production/cognition 多源分类）+ repos.raw（原文/逐字稿）
+SCHEMA_VERSION = 5
 
 
 def connect(path=None):

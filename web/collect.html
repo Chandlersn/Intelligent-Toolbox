@@ -37,20 +37,20 @@
 </head>
 <body data-nav="collect">
 <header>
-  <h1>收藏箱 · 一键收藏仓库</h1>
-  <p>在抖音 / B 站视频简介里复制的仓库链接，贴进来点一下就收好；或直接在分享菜单选「收藏到收藏箱」。可“添加到主屏幕”当 App 用。</p>
+  <h1>收藏箱 · 一键收藏</h1>
+  <p>粘贴 GitHub / GitLab 仓库地址，或抖音视频分享链接，点一下就收好；或在分享菜单选「收藏到收藏箱」。可“添加到主屏幕”当 App 用。</p>
 </header>
 
 <div class="field">
-  <label for="url">仓库地址（从视频简介复制）</label>
-  <input id="url" type="text" inputmode="url" placeholder="https://github.com/owner/repo" autocomplete="off">
+  <label for="url">仓库地址 / 抖音视频分享链接</label>
+  <input id="url" type="text" inputmode="url" placeholder="https://github.com/owner/repo 或 https://v.douyin.com/xxx" autocomplete="off">
 </div>
 <div class="field">
   <label for="note">为什么收（可选，对关联图谱极有价值）</label>
   <textarea id="note" placeholder="比如：做个人知识库的灵感来源"></textarea>
 </div>
 <button class="collect" id="btn">收藏</button>
-<div class="hint">只收 GitHub / GitLab 仓库地址。复制即收藏，分析在后台跑，不打断你。</div>
+<div class="hint">支持 GitHub / GitLab 仓库，以及抖音视频分享链接（自动提取逐字稿并萃取）。复制即收藏，分析在后台跑，不打断你。</div>
 
 <div class="list">
   <div class="card">

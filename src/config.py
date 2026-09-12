@@ -64,6 +64,20 @@ LLM_TIMEOUT_FAST = _env_int("REPO_LLM_TIMEOUT_FAST", 9)
 # GitHub Token（可选）。不设则匿名调用，search 接口限速 10 次/分。
 GITHUB_TOKEN = _env("REPO_GITHUB_TOKEN", _env("GITHUB_TOKEN", ""))
 
+# ---------- 认知端（抖音等）转录 ----------
+# 下载的视频/音频落盘目录。默认放在项目根 media/（不进版本库，已被 .gitignore 习惯排除）。
+MEDIA_DIR = _env("REPO_MEDIA_DIR", os.path.join(ROOT, "media"))
+# faster-whisper 模型尺寸：base 兼顾速度与质量；大 corpus 可换 small/medium。
+WHISPER_MODEL = _env("REPO_WHISPER_MODEL", "base")
+# ffmpeg 二进制解析顺序：① 项目自带 bin/ffmpeg.exe（进本项目方案）② REPO_FFMPEG_BIN ③ PATH 上的 ffmpeg。
+# 这样「进本项目」时抖音转写开箱即用，没装时退回 PATH / 降级。
+def _ffmpeg_bin():
+    cand = os.path.join(ROOT, "bin", "ffmpeg.exe")
+    if os.path.isfile(cand):
+        return cand
+    return _env("REPO_FFMPEG_BIN", "ffmpeg")
+FFMPEG_BIN = _ffmpeg_bin()
+
 
 def summary():
     """给 /api/doctor 与启动日志用：脱敏后的生效配置。"""
@@ -79,4 +93,7 @@ def summary():
         "llm_timeout": LLM_TIMEOUT,
         "llm_timeout_fast": LLM_TIMEOUT_FAST,
         "github_token": bool(GITHUB_TOKEN),
+        "media_dir": MEDIA_DIR,
+        "whisper_model": WHISPER_MODEL,
+        "ffmpeg_bin": FFMPEG_BIN,
     }

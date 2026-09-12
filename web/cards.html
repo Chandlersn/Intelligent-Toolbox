@@ -64,6 +64,13 @@
   .abtn.fb-on{color:var(--accent-ink); background:var(--accent); border-color:var(--accent)}
   .res-hint{margin-top:10px; font-size:13px; color:var(--muted); line-height:1.6}
   .res-hint a{color:var(--accent); cursor:pointer; text-decoration:underline}
+  /* 类型徽标：生产端（仓库）中性、认知端（抖音等）语义绿，沿用主题变量 */
+  .pill.k-prod{ color:var(--muted); background:var(--surface-2); border-color:var(--line); }
+  .pill.k-cog{ color:var(--ok); background:rgba(63,107,94,.10); border-color:rgba(63,107,94,.34); }
+  /* 原文逐字稿：认知端双保留的另一半，可滚动长文 */
+  .rawbox{ font-size:13px; color:var(--muted); line-height:1.7; max-height:220px; overflow:auto;
+    white-space:pre-wrap; background:var(--surface-2); border:1px solid var(--line);
+    border-radius:var(--r); padding:10px; margin-top:4px; }
 </style>
 </head>
 <body data-nav="cards">
@@ -81,6 +88,13 @@
       <option value="stars">星标最多</option>
       <option value="rec">推荐最高</option>
     </select>
+  </div>
+  <div class="grp" id="grp-kind">
+    <div class="gt">类型</div>
+    <div class="pills" id="pills-kind">
+      <span class="pillx" data-v="production">生产端</span>
+      <span class="pillx" data-v="cognition">认知端</span>
+    </div>
   </div>
   <div class="grp" id="grp-domain">
     <div class="gt">领域 <span class="cnt" id="cnt-domain"></span></div>
@@ -125,6 +139,10 @@ function cardHTML(it){
   var name = meta.name || it.url;
   var domain = c.domain || '未分类';
   var rec = (c.recommendation!=null) ? ('推荐 '+c.recommendation+'/5') : '';
+  var isCog = (it.kind === 'cognition');
+  var kindPill = isCog
+    ? '<span class="pill k-cog" title="认知端：抖音等内容收藏">认知</span>'
+    : '<span class="pill k-prod" title="生产端：GitHub/GitLab 仓库">生产</span>';
   var src = c.source==='llm'
     ? '<span class="src llm" title="由大模型分析生成">AI 分析</span>'
     : '<span class="src heu" title="规则自动生成的预览，未接入深度分析">规则预览</span>';
@@ -134,11 +152,16 @@ function cardHTML(it){
     return '<div class="ri"><span class="rn">'+esc(r.name||r.url)+'</span><span class="rr">'+esc(r.reason)+'</span></div>';
   }).join('');
   var starsTxt = (meta.stars!=null) ? ('<span class="stars">★ '+meta.stars+'</span>') : '';
+  // 原文逐字稿：认知端的另一半（与萃取卡片双保留），仅认知端有
+  var rawTxt = (isCog && it.raw && String(it.raw).trim())
+    ? '<div class="row"><div class="k">原文逐字稿（与上方萃取双保留）</div><div class="rawbox">'+esc(it.raw)+'</div></div>'
+    : '';
+  var viewLabel = isCog ? '看原视频 ↗' : '查看仓库 ↗';
   return ''+
   '<div class="card" id="card-'+esc(it.id)+'" data-id="'+esc(it.id)+'" data-url="'+esc(it.url)+'">'+
     '<div class="top">'+
       '<div><div class="name"><a href="'+esc(it.url)+'" target="_blank" rel="noopener">'+esc(name)+'</a></div><div class="url">'+esc(it.url)+'</div></div>'+
-      '<span class="pill">'+esc(domain)+'</span>'+
+      '<span class="pill">'+esc(domain)+'</span>'+kindPill+
       (it.__upd ? '<span class="pill upd">有更新</span>' : '')+src+
     '</div>'+
     (starsTxt?'<div class="row"><span class="v">'+starsTxt+'　'+(c.maturity?esc(c.maturity):'')+'　'+rec+'</span></div>':'')+
@@ -146,6 +169,7 @@ function cardHTML(it){
     (tech?'<div class="row"><div class="k">技术栈</div><div class="chips">'+tech+'</div></div>':'')+
     (c.why_needed?'<div class="row"><div class="k">你为什么可能需要它</div><div class="v">'+esc(c.why_needed)+'</div></div>':'')+
     (tags?'<div class="row"><div class="k">多维标签</div><div class="chips">'+tags+'</div></div>':'')+
+    rawTxt+
     (rel?'<div class="rel"><div class="k">关联节点</div>'+rel+'</div>':'')+
     '<div class="row"><div class="k">后来怎么样了（只有你知道，不靠推测）</div>'+
       '<div class="acts">'+
@@ -154,7 +178,7 @@ function cardHTML(it){
       '<button class="abtn muted'+(it.feedback==='want'?' fb-on':'')+'" data-act="fb" data-fb="want" data-id="'+it.id+'">还想用</button>'+
       '</div></div>'+
     '<div class="row"><div class="acts">'+
-      '<button class="abtn muted" data-act="view" data-url="'+esc(it.url)+'">查看仓库 ↗</button>'+
+      '<button class="abtn muted" data-act="view" data-url="'+esc(it.url)+'">'+viewLabel+'</button>'+
       '<button class="abtn" data-act="regen" data-id="'+it.id+'">重算</button>'+
       '<button class="abtn share" data-act="share" data-id="'+it.id+'">分享</button>'+
       '<button class="abtn del" data-act="del" data-id="'+it.id+'">删除</button>'+
@@ -164,7 +188,7 @@ function cardHTML(it){
 
 // ===== 新筛选：胶囊云（同层 OR，跨层 AND）=====
 var LAYERS = ['domain', 'tech', 'motive', 'use'];
-var SEL = { domain: [], tech: [], motive: [], use: [] }; // 每层选中的取值列表
+var SEL = { domain: [], tech: [], motive: [], use: [], kind: [] }; // 每层选中的取值列表
 
 // 从 URL 预读筛选条件（如 profile/map 页钻取过来：cards.html?domain=AI·LLM）
 (function readUrlSel(){
@@ -217,17 +241,32 @@ function renderPills(layer, values){
 }
 
 function updateClearBtn(){
-  var has=LAYERS.some(function(l){return SEL[l].length;})
+  var has=LAYERS.concat(['kind']).some(function(l){return SEL[l].length;})
         || document.getElementById('f-q').value.trim();
   document.getElementById('f-clr').hidden=!has;
 }
+
+// 类型筛选（生产端 / 认知端）：胶囊直接写死在 HTML 里，这里只绑定点击
+(function wireKindPills(){
+  var box=document.getElementById('pills-kind');
+  if(!box) return;
+  box.querySelectorAll('.pillx').forEach(function(p){
+    p.addEventListener('click',function(){
+      var v=p.getAttribute('data-v');
+      var i=SEL.kind.indexOf(v);
+      if(i>=0){ SEL.kind.splice(i,1); p.classList.remove('on'); }
+      else { SEL.kind.push(v); p.classList.add('on'); }
+      updateClearBtn(); load();
+    });
+  });
+})();
 
 function load(){
   var w=document.getElementById('wrap');
   var q=document.getElementById('f-q').value.trim();
   var sort=document.getElementById('f-sort').value;
   var params=[];
-  LAYERS.forEach(function(layer){
+  LAYERS.concat(['kind']).forEach(function(layer){
     SEL[layer].forEach(function(v){ params.push(layer+'='+encodeURIComponent(v)); });
   });
   if(q) params.push('q='+encodeURIComponent(q));
@@ -383,14 +422,16 @@ function onShare(id){
     if(!it){ alert('未找到该收藏'); return; }
     var c=it.card||{}, meta=it.meta||{};
     var name=meta.name||it.url;
+    var isCog=(it.kind==='cognition');
     var lines=[];
-    lines.push('【收藏箱 · 仓库卡片】');
+    lines.push('【收藏箱 · '+(isCog?'内容卡片':'仓库卡片')+'】');
     lines.push(name+'  '+ it.url);
     if(c.domain) lines.push('领域：'+c.domain);
     if(c.purpose) lines.push('用途：'+c.purpose);
     if(c.tech_stack&&c.tech_stack.length) lines.push('技术栈：'+c.tech_stack.join('、'));
     if(c.why_needed) lines.push('我为什么收：'+c.why_needed);
     if(c.maturity) lines.push('成熟度：'+c.maturity);
+    if(isCog && it.raw && String(it.raw).trim()) lines.push('原文逐字稿：'+it.raw);
     if(c.source==='llm') lines.push('（由 AI 分析生成）');
     var txt=lines.join('\n');
     var link=location.origin+'/collect?url='+encodeURIComponent(it.url);
@@ -419,10 +460,10 @@ function fallbackCopy(text, okMsg){
 }
 
 function clearAll(){
-  LAYERS.forEach(function(layer){ SEL[layer] = []; });
+  LAYERS.concat(['kind']).forEach(function(layer){ SEL[layer] = []; });
   document.getElementById('f-q').value='';
   // 重置所有胶囊高亮
-  LAYERS.forEach(function(layer){
+  LAYERS.concat(['kind']).forEach(function(layer){
     document.querySelectorAll('#pills-'+layer+' .pillx').forEach(function(p){ p.classList.remove('on'); });
   });
   updateClearBtn(); load();

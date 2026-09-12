@@ -111,16 +111,15 @@ def _llm_json(system, user, expect="dict", timeout=None, retries=None):
     return obj
 
 
-def _llm_card(meta, note, item_id, conn, timeout=None, retries=None):
-    """用灯笼 llm.chat 生成卡片。返回 (card_dict, True) 或 (None, False)。"""
+def _llm_card(meta, note, item_id, conn, timeout=None, retries=None, kind="production"):
+    """用灯笼 llm.chat 生成卡片。返回 (card_dict, True) 或 (None, False)。
+
+    kind='production' → 仓库视角（GitHub 元数据）；kind='cognition' → 内容视角
+    （抖音/文章，标题/简介/逐字稿）。两者共用同一份领域白名单与卡片结构。
+    """
     llm_mod = _load_llm()
     if llm_mod is None:
         return None, False
-    name = meta.get("name") or meta.get("full_name") or ""
-    desc = meta.get("description") or "（无描述）"
-    lang = meta.get("language") or "未知"
-    stars = meta.get("stars") or 0
-    topics = ", ".join(str(t) for t in (meta.get("topics") or [])) or "无"
     # 已有收藏的轻量上下文：用 domain 轴让分析带一点个性化（只发领域名，不出行为明细）
     ctx = ""
     if conn:
@@ -136,22 +135,61 @@ def _llm_card(meta, note, item_id, conn, timeout=None, retries=None):
                       "；".join("%s×%d" % (r[0], r[1]) for r in rows)
         except Exception:
             ctx = ""
-    system = (
-        "你是仓库分析助手。用户收藏开源仓库，你需要给出结构化、克制、不说废话的多维卡片。"
-        "严格只输出 JSON，不要任何解释或 Markdown 代码块标记。字段："
-        "domain(领域，从[AI·LLM, Web 框架, 前端/UI, DevOps/云, 数据库, CLI/工具, 移动端, 安全, 数据/可视化, 知识/笔记, 未分类]选一), "
-        "purpose(一句话说清这仓库解决什么问题), "
-        "tech_stack(技术栈数组，最多6), "
-        "why_needed(为什么用户可能需要它，结合备注，90字内), "
-        "related_hint(基于已知领域，给1句关联方向建议), "
-        "maturity(顶级/成熟/活跃/新兴/未知 + 可选' · 近一年有更新'), "
-        "tags(标签数组，最多8), "
-        "recommendation(0-5整数，综合热度与时效)。"
-    )
-    user = (
-        "仓库：%s\n描述：%s\n主语言：%s\nStars：%s\nTopics：%s\n用户备注：%s\n%s"
-        % (name, desc, lang, stars, topics, note or "（无）", ctx)
-    )
+
+    if kind == "cognition":
+        title = meta.get("title") or meta.get("name") or ""
+        author = meta.get("author") or ""
+        desc = meta.get("description") or ""
+        transcript = meta.get("transcript") or ""
+        system = (
+            "你是内容分析助手。用户收藏了一段短视频/文章类认知内容（如抖音、教程），"
+            "需要给出结构化、克制、不说废话的多维卡片。严格只输出 JSON，不要任何解释或 Markdown。"
+            "字段：domain(领域，从[AI·LLM, Web 框架, 前端/UI, DevOps/云, 数据库, CLI/工具, "
+            "移动端, 安全, 数据/可视化, 知识/笔记, 未分类]选一), "
+            "purpose(一句话说清这段内容讲什么/解决什么认知问题), "
+            "tech_stack(涉及的技术/工具数组，最多6，没有则[]), "
+            "why_needed(为什么用户可能需要它，结合备注，90字内), "
+            "related_hint(基于已知领域，给1句关联方向建议), "
+            "maturity(顶级/成熟/活跃/新兴/未知), "
+            "tags(标签数组，最多8), recommendation(0-5整数，内容质量与相关性自评)。"
+        )
+        user = "标题：%s\n作者：%s\n简介：%s\n逐字稿：%s\n用户备注：%s\n%s" % (
+            title, author, desc,
+            (transcript[:4000] if transcript else "（无逐字稿）"),
+            note or "（无）", ctx)
+        fallback_domain_text = (title + " " + desc + " " + transcript)
+        fallback_tech = []
+        fallback_tags = None
+        fallback_maturity = "未知"
+        fallback_rec = 0
+    else:
+        name = meta.get("name") or meta.get("full_name") or ""
+        desc = meta.get("description") or "（无描述）"
+        lang = meta.get("language") or "未知"
+        stars = meta.get("stars") or 0
+        topics = ", ".join(str(t) for t in (meta.get("topics") or [])) or "无"
+        system = (
+            "你是仓库分析助手。用户收藏开源仓库，你需要给出结构化、克制、不说废话的多维卡片。"
+            "严格只输出 JSON，不要任何解释或 Markdown 代码块标记。字段："
+            "domain(领域，从[AI·LLM, Web 框架, 前端/UI, DevOps/云, 数据库, CLI/工具, 移动端, 安全, 数据/可视化, 知识/笔记, 未分类]选一), "
+            "purpose(一句话说清这仓库解决什么问题), "
+            "tech_stack(技术栈数组，最多6), "
+            "why_needed(为什么用户可能需要它，结合备注，90字内), "
+            "related_hint(基于已知领域，给1句关联方向建议), "
+            "maturity(顶级/成熟/活跃/新兴/未知 + 可选' · 近一年有更新'), "
+            "tags(标签数组，最多8), "
+            "recommendation(0-5整数，综合热度与时效)。"
+        )
+        user = (
+            "仓库：%s\n描述：%s\n主语言：%s\nStars：%s\nTopics：%s\n用户备注：%s\n%s"
+            % (name, desc, lang, stars, topics, note or "（无）", ctx)
+        )
+        fallback_domain_text = _text_blob(meta)
+        fallback_tech = detect_tech_stack(meta)
+        fallback_tags = detect_tags(meta)
+        fallback_maturity = detect_maturity(meta)
+        fallback_rec = detect_recommendation(meta)
+
     obj = _llm_json(
         system, user, expect="dict",
         timeout=timeout if timeout is not None else config.LLM_TIMEOUT,
@@ -159,22 +197,23 @@ def _llm_card(meta, note, item_id, conn, timeout=None, retries=None):
     )
     if not obj:
         return None, False
-    # 规整成标准卡片结构
+    # 规整成标准卡片结构（两类共用）
+    domain = obj.get("domain") or detect_domain_text(fallback_domain_text)
     card = {
-        "domain": obj.get("domain") or detect_domain(meta),
+        "domain": domain,
         "purpose": obj.get("purpose") or desc,
-        "tech_stack": obj.get("tech_stack") or detect_tech_stack(meta),
+        "tech_stack": obj.get("tech_stack") or fallback_tech,
         "why_needed": obj.get("why_needed") or (note or "（未填写备注）"),
         "related_nodes": [],  # 关联仍由本地 detect_related 计算，保证基于真实收藏
-        "maturity": obj.get("maturity") or detect_maturity(meta),
-        "tags": obj.get("tags") or detect_tags(meta),
-        "recommendation": obj.get("recommendation", detect_recommendation(meta)),
+        "maturity": obj.get("maturity") or fallback_maturity,
+        "tags": obj.get("tags") if obj.get("tags") is not None else (fallback_tags or [domain]),
+        "recommendation": obj.get("recommendation", fallback_rec),
         "source": "llm",
     }
     try:
         card["recommendation"] = int(card["recommendation"])
     except Exception:
-        card["recommendation"] = detect_recommendation(meta)
+        card["recommendation"] = fallback_rec
     return card, True
 
 
@@ -236,32 +275,44 @@ def _llm_recommend_insight(profile_text):
     return uniq[:4] if uniq else None
 
 
-# 领域关键词表：topic / 描述词 → 领域。命中越多越优先。
+# 领域关键词表：topic / 描述词 / 中文语义 → 领域。命中越多越优先。
+# 后半段补的中文词，是为了让抖音/文章这类「认知端」中文逐字稿也能落到领域轴。
 DOMAIN_KEYWORDS = {
     "AI·LLM": ["llm", "gpt", "transformer", "diffusion", "agent", "rag",
                "embedding", "machine-learning", "deep-learning", "nlp",
                "chatbot", "stable-diffusion", "pytorch", "tensorflow",
-               "langchain", "prompt", "fine-tune", "inference"],
+               "langchain", "prompt", "fine-tune", "inference",
+               "人工智能", "大模型", "智能体", "机器学习", "深度学习",
+               "自然语言", "语音识别", "神经网络", "gpt", "chatgpt", "ai"],
     "Web 框架": ["web", "framework", "flask", "django", "fastapi", "express",
                  "spring", "koa", "rest", "http-server", "backend",
-                 "web-server", "middleware"],
+                 "web-server", "middleware",
+                 "后端", "服务端", "接口", "网站", "服务器"],
     "前端/UI": ["react", "vue", "svelte", "component", "ui", "css", "tailwind",
-                "design-system", "component-library", "frontend", "spa"],
+                "design-system", "component-library", "frontend", "spa",
+                "前端", "界面", "组件", "设计", "交互", "网页", "app"],
     "DevOps/云": ["docker", "kubernetes", "k8s", "ci", "cd", "devops",
                   "terraform", "ansible", "helm", "cloud", "serverless",
-                  "infrastructure", "monitoring", "observability"],
+                  "infrastructure", "monitoring", "observability",
+                  "部署", "运维", "云", "自动化", "容器"],
     "数据库": ["database", "sql", "postgres", "mysql", "sqlite", "mongodb",
-               "redis", "orm", "vector-db", "embedded-db", "oltp"],
+               "redis", "orm", "vector-db", "embedded-db", "oltp",
+               "数据库", "存储", "缓存", "索引"],
     "CLI/工具": ["cli", "command-line", "terminal", "tool", "util", "utils",
-                 "scaffold", "boilerplate", "dotfiles"],
+                 "scaffold", "boilerplate", "dotfiles",
+                 "命令行", "工具", "脚本", "插件"],
     "移动端": ["android", "ios", "react-native", "flutter", "mobile",
-               "swift", "kotlin", "jetpack"],
+               "swift", "kotlin", "jetpack",
+               "安卓", "手机", "app", "小程序"],
     "安全": ["security", "auth", "crypto", "encryption", "pentest",
-             "vulnerability", "jwt", "oauth", "iam"],
+             "vulnerability", "jwt", "oauth", "iam",
+             "安全", "加密", "隐私", "权限", "防护"],
     "数据/可视化": ["data", "visualization", "chart", "dashboard", "analytics",
-                   "etl", "pandas", "plot", "bi", "report"],
+                   "etl", "pandas", "plot", "bi", "report",
+                   "数据", "可视化", "图表", "分析", "报表", "看板"],
     "知识/笔记": ["knowledge", "note", "notebook", "wiki", "second-brain",
-                  "pkm", "markdown", "docs", "documentation"],
+                  "pkm", "markdown", "docs", "documentation",
+                  "笔记", "知识", "学习", "教程", "读书", "复盘", "方法论"],
 }
 
 # 非技术型、仅作修饰的 topic，不进 tech_stack 展示
@@ -281,8 +332,9 @@ def _text_blob(meta):
     return " ".join(parts)
 
 
-def detect_domain(meta):
-    blob = _text_blob(meta)
+def detect_domain_text(text):
+    """对任意文本做领域关键词打分（中文逐字稿 / 英文描述都适用）。"""
+    blob = (text or "").lower()
     if not blob:
         return "未分类"
     scores = {}
@@ -292,8 +344,12 @@ def detect_domain(meta):
             scores[domain] = hit
     if not scores:
         return "未分类"
-    best = max(scores, key=scores.get)
-    return best
+    return max(scores, key=scores.get)
+
+
+def detect_domain(meta):
+    """从仓库 meta 的英文描述/语言/topics 推断领域（生产端）。"""
+    return detect_domain_text(_text_blob(meta))
 
 
 def detect_tags(meta):
@@ -438,9 +494,15 @@ def detect_recommendation(meta):
     return score
 
 
-def detect_related(meta, note, item_id, conn):
-    """弱协同关联：同领域或共享标签的已有收藏（排除自身）。"""
-    domain = detect_domain(meta)
+def detect_related(meta, note, item_id, conn, domain=None):
+    """弱协同关联：同领域或共享标签的已有收藏（排除自身）。
+
+    domain 可由调用方显式传入（认知端用逐字稿算出的领域），否则从 meta 推断。
+    显式传入是跨类型碰撞的关键 —— 抖音视频与 GitHub 仓库只要同处一个领域轴，
+    就能在这里被关联起来。
+    """
+    if domain is None:
+        domain = detect_domain(meta)
     my_tags = set(t.lower() for t in detect_tags(meta))
     c = conn.cursor()
     c.execute("SELECT id,url,meta,card FROM repos WHERE id<>? AND meta IS NOT NULL", (item_id,))
@@ -558,8 +620,12 @@ def _llm_note_axes(note, meta):
     return {"motive": motive or None, "scene": scene or None}
 
 
-def _related_for(meta, note, item_id, conn, timeout=None, retries=None):
-    """关联节点：LLM 语义优先，规则回退。保证基于用户真实收藏。"""
+def _related_for(meta, note, item_id, conn, timeout=None, retries=None, domain=None):
+    """关联节点：LLM 语义优先，规则回退。保证基于用户真实收藏。
+
+    domain 显式传入时（认知端），规则回退会按该领域去匹配已有收藏，
+    实现「抖音讲前端 → 你收藏的前端仓库」这类跨类型碰撞。
+    """
     if not conn:
         return []
     # 取候选（已有收藏，排除自身）
@@ -610,32 +676,62 @@ def _related_for(meta, note, item_id, conn, timeout=None, retries=None):
                           "name": c["name"], "reason": r["reason"]})
         if nodes:
             return nodes[:5]
-    return detect_related(meta, note, item_id, conn)
+    return detect_related(meta, note, item_id, conn, domain=domain)
 
 
-def build_card(meta, note, item_id, conn, timeout=None, retries=None):
+def _kind_of_meta(meta):
+    """从 meta 推断收藏类型：抖音等认知端内容为 cognition，其余为 production。"""
+    return "cognition" if (meta or {}).get("platform") == "douyin" else "production"
+
+
+def build_card(meta, note, item_id, conn, timeout=None, retries=None, kind=None):
     """生成多维分析卡片。优先 LLM（灯笼 llm 模块），失败回退启发式。
+
+    kind='production'（GitHub 仓库）与 kind='cognition'（抖音/文章）共用同一套卡片结构；
+    区别在于输入字段与领域推断的语料（认知端用中文逐字稿，生产端用英文 meta）。
 
     timeout/retries: 交互链路（用户点「重算」）传短预算（config.LLM_TIMEOUT_FAST），
     让后端比前端 12s 超时先放弃 —— 用户看到的是「已保留原卡片」而不是「超时」。
     后台 worker 不传，走 config 里的默认（可以慢，但不能无限等）。
     """
     meta = meta or {}
+    kind = kind or _kind_of_meta(meta)
     # 1) 先试 LLM（复用灯笼 key 配置）
-    llm_card, ok = _llm_card(meta, note, item_id, conn, timeout=timeout, retries=retries)
+    llm_card, ok = _llm_card(meta, note, item_id, conn, timeout=timeout, retries=retries, kind=kind)
     if ok and llm_card:
-        # 关联节点：LLM 语义优先（跨领域），规则回退
+        # 关联节点：LLM 语义优先（跨领域），规则回退（按本卡片领域做跨类型碰撞）
         llm_card["related_nodes"] = _related_for(
-            meta, note, item_id, conn, timeout=timeout, retries=retries)
+            meta, note, item_id, conn, timeout=timeout, retries=retries,
+            domain=llm_card.get("domain"))
         return llm_card
     # 2) 回退：启发式规则卡片
+    if kind == "cognition":
+        title = meta.get("title") or meta.get("name") or ""
+        desc = meta.get("description") or ""
+        transcript = meta.get("transcript") or ""
+        text = " ".join([title, desc, transcript])
+        domain = detect_domain_text(text)
+        purpose = desc or (transcript[:120] if transcript else "（暂无内容，可补充备注说明）")
+        tech_stack = []
+        tags = [domain] if domain != "未分类" else []
+        maturity = "未知"
+        recommendation = 0
+        related = _related_for(meta, note, item_id, conn, timeout=timeout,
+                               retries=retries, domain=domain)
+        why = note or ("这段「" + domain + "」内容：" + purpose)
+        return {
+            "domain": domain, "purpose": purpose, "tech_stack": tech_stack,
+            "why_needed": why, "related_nodes": related, "maturity": maturity,
+            "tags": tags, "recommendation": recommendation, "source": "heuristic",
+        }
+    # 生产端启发式
     domain = detect_domain(meta)
     purpose = meta.get("description") or "（暂无描述，可补充备注说明用途）"
     tech_stack = detect_tech_stack(meta)
     tags = detect_tags(meta)
     maturity = detect_maturity(meta)
     recommendation = detect_recommendation(meta)
-    related = _related_for(meta, note, item_id, conn, timeout=timeout, retries=retries)
+    related = _related_for(meta, note, item_id, conn, timeout=timeout, retries=retries, domain=domain)
 
     if note:
         why = note

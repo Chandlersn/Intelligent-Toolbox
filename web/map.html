@@ -59,6 +59,16 @@
     border-left:2px solid var(--line); padding-left:8px; }
   .sample-warn{ font-size:12px; color:var(--warn); background:rgba(181,131,46,.10);
     border:1px solid rgba(181,131,46,.34); border-radius:8px; padding:8px 10px; margin-bottom:10px; }
+  /* 碰撞桥接：生产端↔认知端在同一领域轴上相连 —— 用陶土虚线强调「两类收藏撞在一起」 */
+  .edge.bridge{ stroke:var(--accent); stroke-width:2.4; stroke-dasharray:6 4; opacity:.95; }
+  .edge.bridge.hot{ stroke:var(--accent-2); stroke-width:3; }
+  /* 认知端节点：外圈虚线（语义绿），与生产端区分（生产端无圈） */
+  .cogring{ fill:none; stroke:var(--ok); stroke-width:1.6; stroke-dasharray:3 3; opacity:.9; }
+  .legend-k{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin-top:10px; }
+  .legend-k .sw{ width:16px; height:0; border-top:2px dashed var(--accent); }
+  .legend-k .dot{ width:11px; height:11px; border-radius:50%; border:1.6px dashed var(--ok); }
+  .bridge-note{ font-size:11px; color:var(--faint); margin-top:8px; line-height:1.5;
+    border-left:2px solid var(--accent-line); padding-left:8px; }
   @media (max-width:760px){
     .layout{ grid-template-columns:1fr; }
     .graph-wrap{ border-right:none; border-bottom:1px solid var(--line); }
@@ -70,7 +80,7 @@
 <body data-nav="map">
 <header>
   <h1>兴趣图谱 · 缺角视图</h1>
-  <div class="sub">已收藏 <b id="st-total">0</b> 个仓库 · 覆盖 <b id="st-domain">0</b> 个<span id="st-unit">领域</span> · 缺角建议 <b id="st-gap">0</b> 条</div>
+  <div class="sub">已收藏 <b id="st-total">0</b> 个仓库 · 覆盖 <b id="st-domain">0</b> 个<span id="st-unit">领域</span> · 缺角建议 <b id="st-gap">0</b> 条<span id="st-bridge-wrap" hidden> · 碰撞桥接 <b id="st-bridge">0</b> 处</span></div>
 </header>
 
 <div class="layout">
@@ -97,6 +107,12 @@
     <div class="src-note">这一块是<b>种子先验</b>（编者预判的常见搭配），不是对你的行为统计 —— 样本够了以后会换成真共现。</div>
     <div id="gaps"></div>
     <div class="note">关联边表示仓库间的领域 / 标签关系。缺角仅供参考，不代表你一定需要。</div>
+
+    <h2>碰撞桥接</h2>
+    <div class="bridge-note">生产端（GitHub/GitLab 仓库）与认知端（抖音等内容）在<b>同一领域</b>轴相撞时，用陶土虚线连起来 —— 这正是「行为收藏」与「认知收藏」互相激发的地方。</div>
+    <div class="legend-k"><span class="sw"></span>生产端 ↔ 认知端 桥接</div>
+    <div class="legend-k"><span class="dot"></span>认知端节点（抖音等内容）</div>
+    <div class="note">生产端节点为实心圆；认知端节点外圈加虚线环。</div>
   </aside>
 </div>
 
@@ -169,6 +185,12 @@ function applyAxis(){
   document.querySelectorAll(".btn.ax").forEach(b =>
     b.classList.toggle("on", b.getAttribute("data-axis") === curAxis));
   edges = edgesForAxis();
+  const bridgeCount = edges.filter(e => e.bridge).length;
+  const wrap = document.getElementById("st-bridge-wrap");
+  if(wrap){
+    wrap.hidden = bridgeCount === 0;
+    document.getElementById("st-bridge").textContent = bridgeCount;
+  }
   renderGroups();
   document.getElementById("st-domain").textContent = groupKeys().length;
   initGraph();
@@ -185,8 +207,15 @@ function edgesForAxis(){
   Object.keys(byVal).forEach(v => {
     const ids = byVal[v];
     for(let i = 0; i < ids.length; i++)
-      for(let j = i + 1; j < ids.length; j++)
-        out.push({source: ids[i], target: ids[j], reason: "同属「" + v + "」"});
+      for(let j = i + 1; j < ids.length; j++){
+        const a = byId[ids[i]], b = byId[ids[j]];
+        const bridge = (a.kind || "production") !== (b.kind || "production");
+        out.push({
+          source: ids[i], target: ids[j],
+          bridge,
+          reason: bridge ? ("「" + v + "」：生产端 ↔ 认知端") : ("同属「" + v + "」")
+        });
+      }
   });
   return out;
 }
@@ -287,7 +316,7 @@ function initGraph(){
   // 建边
   const edgeEls = edges.map(e=>{
     const l = document.createElementNS(NS,"line");
-    l.setAttribute("class","edge");
+    l.setAttribute("class", e.bridge ? "edge bridge" : "edge");
     svg.appendChild(l);
     return {el:l, e};
   });
@@ -302,7 +331,15 @@ function initGraph(){
     t.setAttribute("text-anchor","middle");
     t.setAttribute("dy", n.r + 10);
     t.textContent = n.name;
-    g.appendChild(c); g.appendChild(t);
+    g.appendChild(c);
+    // 认知端节点：外圈虚线环（与生产端实心圆区分）
+    if(n.kind === "cognition"){
+      const ring = document.createElementNS(NS,"circle");
+      ring.setAttribute("class","cogring");
+      ring.setAttribute("r", n.r + 3.5);
+      g.appendChild(ring);
+    }
+    g.appendChild(t);
     svg.appendChild(g);
     bindNode(g, n);
     return {g, c, t, n};
@@ -400,7 +437,9 @@ function bindNode(g, n){
 }
 function showTip(n, e){
   const ax = AXES.find(a => a.key === curAxis) || AXES[0];
+  const kindTxt = (n.kind==='cognition') ? '认知端（抖音等）' : '生产端（仓库）';
   tip.innerHTML = '<b>'+esc(n.name)+'</b><br>'+esc(ax.label)+'：'+esc(nodeGroup(n))+
+    '<br>'+kindTxt+
     '<br>星标：'+(n.stars||0).toLocaleString()+' · '+esc(n.maturity || '')+
     (n.purpose? '<br><br>'+esc(n.purpose) : '');
   tip.style.opacity = 1; moveTip(e);
@@ -436,8 +475,9 @@ function applyHighlight(){
       on = (e.source===selId||e.target===selId);
       hot = on;
     }
-    el.classList.toggle("dim", !on);
-    el.classList.toggle("hot", hot);
+    // 桥接边是「碰撞」重点：除非显式被过滤掉，否则始终高亮（不被 dim）
+    el.classList.toggle("dim", !on && !e.bridge);
+    el.classList.toggle("hot", hot || (e.bridge && (nb!==null || domainFilter)));
   });
 }
 

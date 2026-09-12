@@ -20,6 +20,7 @@ import hmac
 import json
 import os
 import re
+import sys
 import threading
 import time
 import urllib.request
@@ -29,6 +30,7 @@ from urllib.parse import urlparse, quote, parse_qs, unquote
 import analyze
 import config
 import db
+import douyin_source
 
 # 兼容旧引用（migrate/外部脚本曾 import server.DB / server.PORT）
 ROOT = config.ROOT
@@ -71,6 +73,10 @@ def init_db():
     db.ensure_column(conn, "repos", "source", "TEXT DEFAULT 'manual'")
     db.ensure_column(conn, "repos", "feedback", "TEXT")
     db.ensure_column(conn, "repos", "last_checked_at", "TEXT")
+    # 多源：kind 区分生产端（GitHub/GitLab 仓库）与认知端（抖音/文章等）；
+    # raw 存放原文（认知端的逐字稿），与 card（萃取）双保留。
+    db.ensure_column(conn, "repos", "kind", "TEXT DEFAULT 'production'")
+    db.ensure_column(conn, "repos", "raw", "TEXT")
     # 仓库更新事件：本地比对新旧 GitHub 元数据后落下的变化，供前端做「反馈消息」。
     # seen=0 表示用户还没看；反复检查不会重复刷屏（同仓同类型未读事件只保留最新一条）。
     c.execute(
@@ -183,7 +189,7 @@ def get_graph(sample_warn=True):
     """聚合多轴数据 → 图谱结构。优先读 repo_axis，轴缺失时回退 card。"""
     conn = db.connect()
     c = conn.cursor()
-    c.execute("SELECT id,url,meta,card FROM repos WHERE card IS NOT NULL")
+    c.execute("SELECT id,url,meta,card,kind FROM repos WHERE card IS NOT NULL")
     rows = c.fetchall()
     c.execute("SELECT repo_id, axis_key, value, confidence FROM repo_axis")
     axis_rows = c.fetchall()
@@ -197,7 +203,7 @@ def get_graph(sample_warn=True):
         )
 
     nodes, edges, domains = [], [], {}
-    for rid, url, rmeta_s, rcard_s in rows:
+    for rid, url, rmeta_s, rcard_s, rkind in rows:
         try:
             card = json.loads(rcard_s) if rcard_s else {}
             meta = json.loads(rmeta_s) if rmeta_s else {}
@@ -217,6 +223,7 @@ def get_graph(sample_warn=True):
             stars = 0
         nodes.append({
             "id": rid, "url": url, "name": name, "domain": domain,
+            "kind": rkind or "production",
             "axes": my_axes, "tags": card.get("tags", []), "stars": stars,
             "maturity": card.get("maturity", ""),
             "recommendation": card.get("recommendation", 0),
@@ -483,7 +490,7 @@ def get_profile():
     conn = db.connect()
     c = conn.cursor()
     c.execute(
-        "SELECT id,url,note,status,meta,card,created_at,COALESCE(source,'manual'),feedback "
+        "SELECT id,url,note,status,meta,card,created_at,COALESCE(source,'manual'),feedback,kind "
         "FROM repos ORDER BY id"
     )
     rows = c.fetchall()
@@ -507,11 +514,12 @@ def get_profile():
     notes_with_src = 0
     from_recommend = 0
     sources = {}
+    kinds = {}
     carded = 0
     motive_dist = {}
     feedback_dist = {}
 
-    for rid, url, note, status, rmeta_s, rcard_s, created_at, src, fb in rows:
+    for rid, url, note, status, rmeta_s, rcard_s, created_at, src, fb, rkind in rows:
         try:
             card = json.loads(rcard_s) if rcard_s else None
         except Exception:
@@ -544,6 +552,8 @@ def get_profile():
         sources[src] = sources.get(src, 0) + 1
         if src == "recommend":
             from_recommend += 1
+        k = rkind or "production"
+        kinds[k] = kinds.get(k, 0) + 1
         if fb in FEEDBACK:
             feedback_dist[fb] = feedback_dist.get(fb, 0) + 1
 
@@ -590,6 +600,7 @@ def get_profile():
         "active_slots": slots,
         "notes_with_src": notes_with_src,
         "from_recommend": from_recommend,
+        "kinds": kinds,
         "gaps": gaps,
         "span": span,
     }
@@ -626,7 +637,7 @@ def get_cards(filters, conn=None):
     own = conn is None
     conn = conn or db.connect()
     c = conn.cursor()
-    c.execute("SELECT id,url,note,status,meta,card,created_at,feedback "
+    c.execute("SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw "
               "FROM repos ORDER BY id DESC")
     rows = c.fetchall()
     c.execute("SELECT repo_id, axis_key, value FROM repo_axis")
@@ -672,7 +683,8 @@ def get_cards(filters, conn=None):
         except Exception:
             meta, card = None, None
         it = {"id": r[0], "url": r[1], "note": r[2], "status": r[3],
-              "meta": meta, "card": card, "created_at": r[6], "feedback": r[7]}
+              "meta": meta, "card": card, "created_at": r[6], "feedback": r[7],
+              "kind": r[8] or "production", "raw": r[9]}
         if not match_layer(it["id"], "domain", filters.get("domain", [])):
             continue
         if not match_layer(it["id"], "tech", filters.get("tech", [])):
@@ -680,6 +692,10 @@ def get_cards(filters, conn=None):
         if not match_layer(it["id"], "motive", filters.get("motive", [])):
             continue
         if not match_layer(it["id"], "use", filters.get("use", [])):
+            continue
+        # 类型筛选：production 生产端（仓库）/ cognition 认知端（抖音等）
+        kinds = filters.get("kind", [])
+        if kinds and (it["kind"] or "production") not in kinds:
             continue
         if filters.get("q") and not match_q(it, filters["q"]):
             continue
@@ -742,6 +758,35 @@ def valid_repo_url(url):
     return None
 
 
+def classify_source(url):
+    """统一来源分类：返回 (kind, path)。
+
+    kind ∈ {"github", "gitlab", "douyin"}；path 仅生产端（GitHub owner/repo）有意义，
+    认知端（抖音）为 None。无法识别返回 None。
+
+    多源融合的入口判别：生产端（GitHub/GitLab 仓库）与认知端（抖音视频）走不同
+    元数据/分析管线，但共享同一套「卡片-轴表」存储与图谱碰撞逻辑。
+    """
+    try:
+        p = urlparse(url)
+    except Exception:
+        return None
+    if p.scheme not in ("http", "https"):
+        return None
+    host = (p.netloc or "").lower().split(":")[0]
+    if host == "github.com":
+        segs = [s for s in p.path.split("/") if s]
+        if len(segs) >= 2:
+            return ("github", "/" + "/".join(segs[:2]))
+    if host.endswith("gitlab.com"):
+        segs = [s for s in p.path.split("/") if s]
+        if len(segs) >= 2:
+            return ("gitlab", "/" + "/".join(segs[:2]))
+    if douyin_source.is_douyin(url):
+        return ("douyin", None)
+    return None
+
+
 def esc_html(s):
     return (str(s).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
@@ -755,12 +800,12 @@ REPO_URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 
 
 def extract_repo_url(text):
-    """从一段文字里抽第一个合法仓库地址（微信转发 / 系统分享场景）。"""
+    """从一段文字里抽第一个合法收藏地址（GitHub/GitLab/Douyin，微信转发 / 系统分享场景）。"""
     if not text:
         return None
     for m in REPO_URL_RE.findall(text):
         u = m.rstrip(r""".,;:!?)'\]}>。，；：、""")
-        if valid_repo_url(u):
+        if classify_source(u):
             return u
     return None
 
@@ -852,16 +897,45 @@ def sync_axes(conn, rid, card, note, meta, use_llm=True, feedback=None):
     conn.commit()
 
 
-def worker(item_id, url, note, kind, path, source="manual"):
-    """后台异步：拉取元数据 → 生成多维分析卡片 → 落库 → 同步轴表。"""
-    meta = fetch_github_meta(path) if kind == "github" else {"note": "gitlab meta 暂未拉取"}
+def _transcribe_engine(audio_path):
+    """默认转写引擎：本地 faster-whisper（懒加载）；不可用静默返回 None。
+
+    独立成函数便于注入/测试。引擎的选择集中在 douyin_source.transcribe。
+    """
+    return douyin_source.transcribe(audio_path, engine="whisper")
+
+
+def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
+    """后台异步：拉取元数据 → 生成多维分析卡片 → 落库 → 同步轴表。
+
+    kind 决定走哪条元数据管线：
+    - github/gitlab：拉取仓库元数据（生产端行为收藏）
+    - douyin：解析分享页 + （可选）下载转写逐字稿（认知端内容收藏），
+      逐字稿存 repos.raw，与萃取后的 card 双保留。
+
+    transcribe_fn：可注入的转写引擎（测试用假引擎，也便于以后换云端 ASR）。
+    不传则走默认本地 faster-whisper。
+    """
     conn = db.connect()
     c = conn.cursor()
-    card = analyze.build_card(meta, note, item_id, conn)
-    status = "carded" if "error" not in meta else "pending_meta"
-    c.execute("UPDATE repos SET meta=?, card=?, status=? WHERE id=?",
-              (json.dumps(meta, ensure_ascii=False),
-               json.dumps(card, ensure_ascii=False), status, item_id))
+    if kind == "douyin":
+        meta, raw = douyin_source.collect_douyin(
+            url, transcribe_fn=transcribe_fn or _transcribe_engine,
+            media_dir=config.MEDIA_DIR or None)
+        if raw:
+            meta["transcript"] = raw
+        card = analyze.build_card(meta, note, item_id, conn, kind="cognition")
+        status = "carded" if meta.get("title") else "pending_meta"
+        c.execute("UPDATE repos SET meta=?, card=?, status=?, raw=?, kind='cognition' WHERE id=?",
+                  (json.dumps(meta, ensure_ascii=False),
+                   json.dumps(card, ensure_ascii=False), status, raw or None, item_id))
+    else:
+        meta = fetch_github_meta(path) if kind == "github" else {"note": "gitlab meta 暂未拉取"}
+        card = analyze.build_card(meta, note, item_id, conn)
+        status = "carded" if "error" not in meta else "pending_meta"
+        c.execute("UPDATE repos SET meta=?, card=?, status=?, kind='production' WHERE id=?",
+                  (json.dumps(meta, ensure_ascii=False),
+                   json.dumps(card, ensure_ascii=False), status, item_id))
     sync_axes(conn, item_id, card, note, meta)   # worker 与 regenerate 共用同一落点
     conn.commit()
     conn.close()
@@ -872,10 +946,14 @@ def collect_payload(url, note, source="manual"):
     url = (url or "").strip()
     note = (note or "").strip()
     source = source if source in SOURCES else "manual"
-    kind_path = valid_repo_url(url)
+    kind_path = classify_source(url)
     if not kind_path:
-        return (400, {"ok": False, "error": "仅支持 GitHub / GitLab 仓库地址"})
-    kind, path = kind_path
+        return (400, {"ok": False,
+                      "error": "仅支持 GitHub / GitLab 仓库地址，或抖音视频分享链接"})
+    platform, path = kind_path
+    # DB 的 kind 列存「多源类别」（production 生产端 / cognition 认知端），
+    # 与平台（github/gitlab/douyin）是两回事 —— 后者只用于 worker 分支。
+    category = "cognition" if platform == "douyin" else "production"
     conn = db.connect()
     c = conn.cursor()
     c.execute("SELECT id,status FROM repos WHERE url=?", (url,))
@@ -883,14 +961,14 @@ def collect_payload(url, note, source="manual"):
     if existing:
         conn.close()
         return (200, {"ok": True, "id": existing[0], "status": existing[1], "dup": True})
-    c.execute("INSERT INTO repos (url,note,status,created_at,source) VALUES (?,?,?,?,?)",
-              (url, note, "queued", now(), source))
+    c.execute("INSERT INTO repos (url,note,status,created_at,source,kind) VALUES (?,?,?,?,?,?)",
+              (url, note, "queued", now(), source, category))
     item_id = c.lastrowid
     conn.commit()
     conn.close()
-    threading.Thread(target=worker, args=(item_id, url, note, kind, path, source),
+    threading.Thread(target=worker, args=(item_id, url, note, platform, path, source),
                      daemon=True).start()
-    return (200, {"ok": True, "id": item_id, "status": "queued", "source": source})
+    return (200, {"ok": True, "id": item_id, "status": "queued", "source": source, "kind": category})
 
 
 def regenerate_card(rid, timeout=None):
@@ -918,7 +996,8 @@ def regenerate_card(rid, timeout=None):
         old_card = None
 
     budget = config.LLM_TIMEOUT_FAST if timeout is None else timeout
-    card = analyze.build_card(meta, note, rid, conn, timeout=budget)
+    kind = analyze._kind_of_meta(meta)
+    card = analyze.build_card(meta, note, rid, conn, timeout=budget, kind=kind)
     # 重算保护：本次回退到启发式、而原卡是 LLM 分析，则不覆盖原卡
     fallback = (card.get("source") != "llm") and bool(old_card and old_card.get("source") == "llm")
     if fallback:
@@ -1191,6 +1270,23 @@ def doctor():
     except Exception:
         size = 0
 
+    # 认知端转录能力（抖音逐字稿）：ffmpeg 是否就绪 + faster-whisper 是否可 import
+    _fw_ok = False
+    try:
+        import faster_whisper  # noqa: F401
+        _fw_ok = True
+    except Exception:
+        _fw_ok = False
+    _ff_present = bool(config.FFMPEG_BIN) and (
+        config.FFMPEG_BIN == "ffmpeg" or os.path.isfile(config.FFMPEG_BIN))
+    transcribe = {
+        "ffmpeg_bin": config.FFMPEG_BIN,
+        "ffmpeg_present": _ff_present,
+        "whisper_model": config.WHISPER_MODEL,
+        "whisper_available": _fw_ok,
+        "ready": _ff_present and _fw_ok,
+    }
+
     return {
         "ok": not mismatches and not no_axis,
         "cards": len(rows),
@@ -1202,6 +1298,7 @@ def doctor():
             "path": config.DB, "schema_version": db.SCHEMA_VERSION,
             "journal_mode": journal, "freelist": freelist, "size": size,
         },
+        "transcribe": transcribe,
         "config": config.summary(),
     }
 
@@ -1393,6 +1490,7 @@ class Handler(BaseHTTPRequestHandler):
             items = get_cards({
                 "domain": qs.get("domain", []), "tech": qs.get("tech", []),
                 "motive": qs.get("motive", []), "use": qs.get("use", []),
+                "kind": qs.get("kind", []),
                 "q": (qs.get("q", [""])[0] or "").strip(),
                 "sort": (qs.get("sort", [""])[0] or "").strip(),
             })
@@ -1411,7 +1509,7 @@ class Handler(BaseHTTPRequestHandler):
             if ids:
                 conn = db.connect()
                 cc = conn.cursor()
-                cc.execute("SELECT id,url,note,meta,card FROM repos WHERE id IN (%s)"
+                cc.execute("SELECT id,url,note,meta,card,kind FROM repos WHERE id IN (%s)"
                            % ",".join("?" * len(ids)), list(ids))
                 rows = cc.fetchall()
                 conn.close()
@@ -1422,7 +1520,8 @@ class Handler(BaseHTTPRequestHandler):
                     card = json.loads(r[4]) if r[4] else None
                 except Exception:
                     meta, card = None, None
-                items.append({"id": r[0], "url": r[1], "note": r[2], "meta": meta, "card": card})
+                items.append({"id": r[0], "url": r[1], "note": r[2], "meta": meta,
+                              "card": card, "kind": r[5] or "production"})
             self._send(200, {"filters": filters, "count": len(items), "items": items})
         elif path == "/api/graph":
             self._send(200, get_graph())
@@ -1446,11 +1545,11 @@ class Handler(BaseHTTPRequestHandler):
         if q:
             like = "%" + q + "%"
             c.execute(
-                """SELECT id,url,note,status,meta,card,created_at,feedback FROM repos
+                """SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw FROM repos
                    WHERE url LIKE ? OR note LIKE ? OR meta LIKE ? OR card LIKE ?
                    ORDER BY id DESC LIMIT 50""", (like, like, like, like))
         else:
-            c.execute("SELECT id,url,note,status,meta,card,created_at,feedback FROM repos "
+            c.execute("SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw FROM repos "
                       "ORDER BY id DESC LIMIT 50")
         rows = c.fetchall()
         conn.close()
@@ -1462,7 +1561,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 meta, card = None, None
             items.append({"id": r[0], "url": r[1], "note": r[2], "status": r[3],
-                          "meta": meta, "card": card, "created_at": r[6], "feedback": r[7]})
+                          "meta": meta, "card": card, "created_at": r[6],
+                          "feedback": r[7], "kind": r[8] or "production", "raw": r[9]})
         return {"items": items, "q": q}
 
     # ---------- POST ----------
@@ -1588,4 +1688,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # 进本项目方案：仓库自带 .venv 时优先用 venv python 启动（抖音转录依赖 faster-whisper）。
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _venv_py = os.path.join(_root, ".venv", "Scripts", "python.exe")
+    if os.path.isfile(_venv_py) and os.path.abspath(sys.executable) != os.path.abspath(_venv_py):
+        os.execv(_venv_py, [_venv_py, os.path.abspath(__file__)])
     main()
