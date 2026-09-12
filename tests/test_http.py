@@ -159,8 +159,14 @@ class TestHttp(Base):
         self.assertTrue(body2["dup"])
 
     def test_collect_rejects_bad_url(self):
-        code, body = self.jreq("POST", "/collect", {"url": "https://example.com/a/b"})
+        # 非 http(s) 链接仍拒绝（网页/文章链接已是合法来源）
+        code, body = self.jreq("POST", "/collect", {"url": "ftp://example.com/a/b"})
         self.assertEqual(code, 400)
+
+    def test_collect_accepts_web_url(self):
+        code, body = self.jreq("POST", "/collect", {"url": "https://example.com/a/b"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
 
     def test_collect_from_text_field(self):
         code, body = self.jreq("POST", "/collect",
@@ -282,6 +288,12 @@ class TestHttp(Base):
         self.assertEqual(row[0], "https://github.com/a/b")
 
     def test_deep_link_bad_url_shows_error_page(self):
-        code, data, _ = self.req("GET", "/collect?url=" + "https%3A%2F%2Fexample.com%2Fa%2Fb")
+        # 非 http(s) 链接仍展示错误页（网页/文章链接已是合法来源）
+        code, data, _ = self.req("GET", "/collect?url=" + "ftp%3A%2F%2Fexample.com%2Fa%2Fb")
         self.assertEqual(code, 400)
         self.assertIn("未能收藏", data.decode("utf-8"))
+
+    def test_deep_link_web_url_collects(self):
+        code, data, _ = self.req("GET", "/collect?url=" + "https%3A%2F%2Fexample.com%2Fa%2Fb")
+        self.assertEqual(code, 200)
+        self.assertIn("已收藏", data.decode("utf-8"))

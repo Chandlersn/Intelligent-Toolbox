@@ -680,8 +680,8 @@ def _related_for(meta, note, item_id, conn, timeout=None, retries=None, domain=N
 
 
 def _kind_of_meta(meta):
-    """从 meta 推断收藏类型：抖音等认知端内容为 cognition，其余为 production。"""
-    return "cognition" if (meta or {}).get("platform") == "douyin" else "production"
+    """从 meta 推断收藏类型：抖音 / 网页文章等认知端内容为 cognition，其余为 production。"""
+    return "cognition" if (meta or {}).get("platform") in ("douyin", "web") else "production"
 
 
 def build_card(meta, note, item_id, conn, timeout=None, retries=None, kind=None):

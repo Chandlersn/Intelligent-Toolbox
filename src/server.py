@@ -31,6 +31,7 @@ import analyze
 import config
 import db
 import douyin_source
+import web_source
 
 # 兼容旧引用（migrate/外部脚本曾 import server.DB / server.PORT）
 ROOT = config.ROOT
@@ -784,6 +785,9 @@ def classify_source(url):
             return ("gitlab", "/" + "/".join(segs[:2]))
     if douyin_source.is_douyin(url):
         return ("douyin", None)
+    # 其它 http(s) 链接：当作网页 / 文章（认知端）收录，与生产端在共同领域轴碰撞
+    if p.scheme in ("http", "https"):
+        return ("web", url)
     return None
 
 
@@ -929,6 +933,15 @@ def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
         c.execute("UPDATE repos SET meta=?, card=?, status=?, raw=?, kind='cognition' WHERE id=?",
                   (json.dumps(meta, ensure_ascii=False),
                    json.dumps(card, ensure_ascii=False), status, raw or None, item_id))
+    elif kind == "web":
+        meta, raw = web_source.collect_web(url)
+        if raw:
+            meta["transcript"] = raw
+        card = analyze.build_card(meta, note, item_id, conn, kind="cognition")
+        status = "carded" if meta.get("title") else "pending_meta"
+        c.execute("UPDATE repos SET meta=?, card=?, status=?, raw=?, kind='cognition' WHERE id=?",
+                  (json.dumps(meta, ensure_ascii=False),
+                   json.dumps(card, ensure_ascii=False), status, raw or None, item_id))
     else:
         meta = fetch_github_meta(path) if kind == "github" else {"note": "gitlab meta 暂未拉取"}
         card = analyze.build_card(meta, note, item_id, conn)
@@ -952,8 +965,8 @@ def collect_payload(url, note, source="manual"):
                       "error": "仅支持 GitHub / GitLab 仓库地址，或抖音视频分享链接"})
     platform, path = kind_path
     # DB 的 kind 列存「多源类别」（production 生产端 / cognition 认知端），
-    # 与平台（github/gitlab/douyin）是两回事 —— 后者只用于 worker 分支。
-    category = "cognition" if platform == "douyin" else "production"
+    # 与平台（github/gitlab/douyin/web）是两回事 —— 后者只用于 worker 分支。
+    category = "cognition" if platform in ("douyin", "web") else "production"
     conn = db.connect()
     c = conn.cursor()
     c.execute("SELECT id,status FROM repos WHERE url=?", (url,))

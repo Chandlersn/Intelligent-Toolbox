@@ -16,6 +16,7 @@ import analyze  # noqa: E402
 import config  # noqa: E402
 import db  # noqa: E402
 import douyin_source  # noqa: E402
+import web_source  # noqa: E402
 import server  # noqa: E402
 
 
@@ -39,9 +40,17 @@ class TestClassifySource(unittest.TestCase):
         self.assertEqual(server.classify_source("https://www.douyin.com/video/7300000000"),
                          ("douyin", None))
 
+    def test_web(self):
+        # 任意 http(s) 链接（非 github/gitlab/douyin）按网页 / 文章（认知端）收录
+        self.assertEqual(server.classify_source("https://example.com/a/b"),
+                         ("web", "https://example.com/a/b"))
+        self.assertEqual(server.classify_source("https://blog.x.com/p/123"),
+                         ("web", "https://blog.x.com/p/123"))
+
     def test_unknown(self):
-        self.assertIsNone(server.classify_source("https://example.com/a/b"))
+        # 非 http(s) 或无法解析的协议仍拒绝
         self.assertIsNone(server.classify_source("ftp://github.com/a/b"))
+        self.assertIsNone(server.classify_source("not a url"))
 
     def test_extract_douyin_from_text(self):
         # 从分享文字里抽抖音链接（与 GitHub 同一套抽取逻辑）
@@ -284,6 +293,88 @@ class TestCardsKindFilter(Base):
         prod = server.get_cards({"kind": ["production"]})
         self.assertEqual(len(prod), 1)
         self.assertEqual(prod[0]["kind"], "production")
+
+
+# ═════════════════════════════════════════════════════════════════
+#  网页 / 文章来源：抓取与解析（零依赖，联网用 fetch_fn 注入）
+# ═════════════════════════════════════════════════════════════════
+class TestWebSource(unittest.TestCase):
+    def _html(self):
+        return (
+            '<html><head>'
+            '<meta property="og:title" content="我的文章标题">'
+            '<meta name="description" content="这是简介">'
+            '<title>兜底标题</title></head><body>'
+            '<script>var x=1;</script>'
+            '<p>今天讲 FastAPI 怎么搭后端接口，适合做本地知识库。</p>'
+            '</body></html>')
+
+    def test_parse_meta(self):
+        meta, raw = web_source.collect_web(
+            "https://example.com/a", fetch_fn=lambda u: self._html())
+        self.assertEqual(meta["platform"], "web")
+        self.assertEqual(meta["title"], "我的文章标题")   # og:title 优先于 <title>
+        self.assertEqual(meta["description"], "这是简介")
+        self.assertIn("FastAPI", raw)                     # 正文已抽取
+        self.assertNotIn("var x=1", raw)                  # 脚本被剥离
+        self.assertIn("FastAPI", meta["transcript"])
+
+    def test_fetch_failure_degrades(self):
+        def boom(u):
+            raise Exception("offline")
+        meta, raw = web_source.collect_web("https://example.com/a", fetch_fn=boom)
+        self.assertEqual(meta["platform"], "web")
+        self.assertIsNone(raw)
+        self.assertTrue(meta["title"])                    # 降级标题非空，仍能落基础卡
+
+
+# ═════════════════════════════════════════════════════════════════
+#  worker：网页分支落库（kind / raw / card / 轴表）
+# ═════════════════════════════════════════════════════════════════
+class TestWorkerWeb(Base):
+    def setUp(self):
+        super().setUp()
+        server.worker = self._worker_backup  # 恢复真实 worker（本测试要真的落库）
+
+    def _fake_collect(self, url, fetch_fn=None):
+        meta = {"platform": "web", "name": "用 FastAPI 搭后端", "title": "用 FastAPI 搭后端",
+                "description": "FastAPI 做后端接口", "url": url,
+                "transcript": "今天讲 FastAPI 怎么搭后端接口，适合做本地知识库。"}
+        return meta, "今天讲 FastAPI 怎么搭后端接口，适合做本地知识库。"
+
+    def test_worker_web_creates_cognition_card(self):
+        orig = server.web_source.collect_web
+        server.web_source.collect_web = self._fake_collect
+        try:
+            conn = db.connect()
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO repos (url,note,status,created_at,source,kind) "
+                "VALUES (?,?,?,?,?,?)",
+                ("https://example.com/a/b", "", "queued", server.now(), "manual", "cognition"))
+            rid = c.lastrowid
+            conn.commit()
+            conn.close()
+            server.worker(rid, "https://example.com/a/b", "", "web", None, "manual")
+        finally:
+            server.web_source.collect_web = orig
+
+        conn = db.connect()
+        row = conn.execute(
+            "SELECT kind,raw,meta,card,status FROM repos WHERE id=?", (rid,)).fetchone()
+        ax = conn.execute(
+            "SELECT value FROM repo_axis WHERE repo_id=? AND axis_key='domain'",
+            (rid,)).fetchone()
+        conn.close()
+
+        self.assertEqual(row[0], "cognition")
+        self.assertIn("FastAPI", row[1])              # 正文双保留（raw）
+        meta = json.loads(row[2])
+        self.assertEqual(meta["platform"], "web")
+        card = json.loads(row[3])
+        self.assertEqual(card["domain"], "Web 框架")
+        self.assertEqual(row[4], "carded")
+        self.assertIsNotNone(ax)                      # 轴表已同步
 
 
 if __name__ == "__main__":

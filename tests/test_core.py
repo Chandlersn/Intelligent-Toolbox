@@ -53,8 +53,9 @@ class TestUrlParsing(Base):
         u = "https://github.com/a/b"
         self.assertEqual(server.extract_repo_url(u + "?tab=readme#x"), u + "?tab=readme#x")
 
-    def test_extract_skips_non_repo_links(self):
-        txt = "先看 https://example.com/x 再看 https://github.com/oven-sh/bun"
+    def test_extract_skips_non_http_links(self):
+        # 非 http(s) 的链接（如 ftp）仍被跳过；网页/文章链接已成为合法收藏来源
+        txt = "先看 ftp://example.com/x 再看 https://github.com/oven-sh/bun"
         self.assertEqual(server.extract_repo_url(txt), "https://github.com/oven-sh/bun")
 
     def test_extract_empty(self):
@@ -395,10 +396,18 @@ class TestConsistencyContract(Base):
 #  6. 采集
 # ═══════════════════════════════════════════════════════════════════
 class TestCollect(Base):
-    def test_rejects_non_repo_url(self):
-        code, body = server.collect_payload("https://example.com/a/b", "")
+    def test_rejects_non_http_url(self):
+        # 非 http(s) 链接仍拒绝
+        code, body = server.collect_payload("ftp://example.com/a/b", "")
         self.assertEqual(code, 400)
         self.assertFalse(body["ok"])
+
+    def test_accepts_web_url(self):
+        # 任意网页 / 文章链接作为认知端收录
+        code, body = server.collect_payload("https://example.com/a/b", "")
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["kind"], "cognition")
 
     def test_accepts_and_records_source(self):
         code, body = server.collect_payload("https://github.com/a/b", "", "recommend")
