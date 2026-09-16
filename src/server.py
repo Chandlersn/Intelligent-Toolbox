@@ -54,6 +54,20 @@ CTYPES = {
     ".ico": "image/x-icon", ".webmanifest": "application/manifest+json",
 }
 
+# charset 只对文本类类型有意义。给图片/字体/二进制挂 charset 虽无害但不规范，
+# 所以这里显式区分：文本类 + 结构化文本 + SVG(XML) 才附加。
+_CHARSET_CTYPES = {
+    "application/javascript", "application/json",
+    "application/manifest+json", "image/svg+xml",
+}
+
+
+def with_charset(ctype):
+    """文本类补 charset=utf-8；二进制/图片原样返回。"""
+    if ctype.startswith("text/") or ctype in _CHARSET_CTYPES:
+        return ctype + "; charset=utf-8"
+    return ctype
+
 
 def init_db():
     """建表 + 版本化迁移。幂等，每次启动都跑。"""
@@ -1453,7 +1467,7 @@ class Handler(BaseHTTPRequestHandler):
         with open(full, "rb") as f:
             data = f.read()
         self.send_response(200)
-        self.send_header("Content-Type", ctype + "; charset=utf-8")
+        self.send_header("Content-Type", with_charset(ctype))
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)

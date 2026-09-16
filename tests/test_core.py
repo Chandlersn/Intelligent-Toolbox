@@ -550,6 +550,21 @@ class TestStaticAndGuards(Base):
         self.assertIsNone(server.resolve_static("/../src/server.py"))
         self.assertIsNone(server.resolve_static("..%2f..%2fetc%2fpasswd"))
 
+    def test_favicon_is_served(self):
+        # 浏览器会自动请求 /favicon.ico；文件缺了就每个页面一条 404 噪音
+        self.assertTrue(server.resolve_static("favicon.ico"))
+
+    def test_charset_only_for_text_types(self):
+        # charset 只该挂文本类；给图片/二进制挂 charset 不规范（虽无害）
+        self.assertEqual(server.with_charset("text/html"), "text/html; charset=utf-8")
+        self.assertEqual(server.with_charset("application/javascript"),
+                         "application/javascript; charset=utf-8")
+        self.assertEqual(server.with_charset("image/svg+xml"), "image/svg+xml; charset=utf-8")
+        self.assertEqual(server.with_charset("image/x-icon"), "image/x-icon")
+        self.assertEqual(server.with_charset("image/png"), "image/png")
+        self.assertEqual(server.with_charset("application/octet-stream"),
+                         "application/octet-stream")
+
     def test_cross_origin_is_rejected(self):
         self.assertFalse(_fake_handler(origin="https://evil.example")._origin_local())
         self.assertTrue(_fake_handler(origin="http://127.0.0.1:8732")._origin_local())
