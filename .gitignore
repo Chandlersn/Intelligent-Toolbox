@@ -21,3 +21,7 @@ bin/
 # 下载缓存的音视频（抖音转录中间产物）
 media/
 media/**
+# 本地 whisper 模型权重（curl 从镜像拉取，139MB，不进版本库）
+models/
+# 服务运行日志
+server.log

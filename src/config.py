@@ -64,6 +64,16 @@ LLM_TIMEOUT_FAST = _env_int("REPO_LLM_TIMEOUT_FAST", 9)
 # GitHub Token（可选）。不设则匿名调用，search 接口限速 10 次/分。
 GITHUB_TOKEN = _env("REPO_GITHUB_TOKEN", _env("GITHUB_TOKEN", ""))
 
+# ---------- 逐字稿 → 结构化 markdown 笔记 ----------
+# 这段是「把长逐字稿整理成完整笔记」，与出卡的短预算无关：单独给足输出与时间，
+# 否则会被 llm.chat 默认的 max_tokens=600 从中间硬截断（笔记写一半就断）。
+TRANSCRIPT_MD_MAX_TOKENS = _env_int("REPO_TRANSCRIPT_MD_MAX_TOKENS", 4000)
+# 结构化是后台 enrich，可以慢；但不无限等（单次调用预算，秒）。
+TRANSCRIPT_MD_TIMEOUT = _env_int("REPO_TRANSCRIPT_MD_TIMEOUT", 60)
+# 单次调用能吃下的逐字稿上限（字符）。超过则按句切块、分块纪要再合并，
+# 保证「长内容也不丢篇末」，绝不从中间硬切。
+TRANSCRIPT_MD_SINGLE_MAX = _env_int("REPO_TRANSCRIPT_MD_SINGLE_MAX", 30000)
+
 # ---------- 认知端（抖音等）转录 ----------
 # 下载的视频/音频落盘目录。默认放在项目根 media/（不进版本库，已被 .gitignore 习惯排除）。
 MEDIA_DIR = _env("REPO_MEDIA_DIR", os.path.join(ROOT, "media"))

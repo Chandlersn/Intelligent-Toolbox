@@ -180,6 +180,11 @@ h1{font-size:20px;letter-spacing:.2px}
 
 /* ---------- 卡片「有更新」角标 ---------- */
 .pill.upd{color:var(--warn);background:rgba(224,168,75,.14);border-color:rgba(224,168,75,.40)}
+.pill.stub{color:var(--info,#2f6fb0);background:rgba(47,111,176,.12);border-color:rgba(47,111,176,.40)}
+.stub-msg{color:var(--muted,#8a8a8a);font-size:13px;line-height:1.6}
+.err-msg{color:#c0392b;font-size:13px;line-height:1.6}
+.pill.err{color:#C0392B;background:rgba(192,57,43,.12);border-color:rgba(192,57,43,.38)}
+.err-msg{color:#C0392B;font-size:13px;line-height:1.5}
 
 /* ---------- 桌面端布局（图谱页） ---------- */
 .graph-wrap{border-right:1px solid var(--line)}

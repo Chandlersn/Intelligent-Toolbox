@@ -91,10 +91,74 @@
   /* 类型徽标：生产端（仓库）中性、认知端（抖音等）语义绿，沿用主题变量 */
   .pill.k-prod{ color:var(--muted); background:var(--surface-2); border-color:var(--line); }
   .pill.k-cog{ color:var(--ok); background:rgba(63,107,94,.10); border-color:rgba(63,107,94,.34); }
-  /* 原文逐字稿：认知端双保留的另一半，可滚动长文 */
+  /* 原文逐字稿：认知端双保留的另一半，可滚动长文（折叠在 details 内） */
   .rawbox{ font-size:13px; color:var(--muted); line-height:1.7; max-height:220px; overflow:auto;
     white-space:pre-wrap; background:var(--surface-2); border:1px solid var(--line);
     border-radius:var(--r); padding:10px; margin-top:4px; }
+  /* 逐字稿 · 结构化 markdown 笔记（AI 整理）：要点层常显 + 纪要层折叠，减轻长文视角疲劳 */
+  .note-meta{ margin-left:8px; color:var(--faint); font-weight:400 }
+  .mdbox{ font-size:13.5px; color:var(--ink); line-height:1.85; background:var(--surface-2);
+    border:1px solid var(--line); border-radius:var(--r); padding:13px 15px; margin-top:4px; }
+  .mdbox h2{ font-size:15px; margin:0 0 10px; color:var(--ink); }
+  .mdbox h3{ font-size:14px; margin:18px 0 7px; padding-bottom:5px; color:var(--ink);
+    font-weight:600; border-bottom:1px solid var(--line); }
+  .mdbox h3:first-child{ margin-top:0 }
+  .mdbox h4{ font-size:13.5px; margin:14px 0 5px; color:var(--ink); font-weight:600;
+    padding-left:9px; border-left:2px solid var(--accent); }
+  .mdbox p{ margin:8px 0; }
+  .mdbox ul,.mdbox ol{ margin:8px 0; padding-left:22px; }
+  .mdbox li{ margin:5px 0; }
+  .mdbox li::marker{ color:var(--faint) }
+  .mdbox blockquote{ margin:10px 0; padding:7px 11px; color:var(--muted);
+    background:var(--surface); border-left:2px solid var(--line); border-radius:var(--r-sm); }
+  .mdbox code{ font-family:var(--mono); font-size:12px; background:var(--surface);
+    border:1px solid var(--line); border-radius:4px; padding:0 4px; }
+  .mdbox hr{ border:0; border-top:1px solid var(--line); margin:14px 0; }
+  .mdbox strong{ font-weight:600; }
+  /* 纪要层折叠开关：虚线胶囊状的「展开」入口，收起时卡片高度可控 */
+  .mdmore{ margin-top:8px }
+  .mdmore>summary{ list-style:none; cursor:pointer; user-select:none;
+    font-size:12.5px; color:var(--muted); padding:9px 13px; line-height:1.4;
+    background:var(--surface-2); border:1px dashed var(--line); border-radius:var(--r);
+    transition:color .15s var(--ease), border-color .15s var(--ease), background .15s var(--ease) }
+  .mdmore>summary::-webkit-details-marker{ display:none }
+  .mdmore>summary::marker{ content:"" }
+  .mdmore>summary::before{ content:"▸"; color:var(--faint); margin-right:7px }
+  .mdmore[open]>summary::before{ content:"▾" }
+  .mdmore>summary:hover{ color:var(--accent); border-color:var(--accent-line); background:var(--accent-dim) }
+  .mdmore[open]>summary{ border-style:solid; border-color:var(--line); border-bottom:none;
+    border-bottom-left-radius:0; border-bottom-right-radius:0 }
+  .mdbox.mdbody{ margin-top:0; border-top-left-radius:0; border-top-right-radius:0; border-top:none }
+  /* 原始逐字稿折叠开关 */
+  .rawdet{ margin-top:8px; }
+  .rawdet summary{ cursor:pointer; font-size:12px; color:var(--muted); padding:3px 0; }
+  .rawdet summary:hover{ color:var(--accent); }
+  /* 悬浮目录：长纪要导航（跳转后标题不被顶栏遮住） */
+  .mdbox h2,.mdbox h3,.mdbox h4{ scroll-margin-top:14px }
+  /* 底部有固定导航条（nav.js 注入，高约 48px，z-index 9999）——悬浮按钮必须抬到它上方 */
+  .toc-fab{ display:none; position:fixed; right:14px; bottom:calc(60px + env(safe-area-inset-bottom)); z-index:60;
+    font:600 13px/1 var(--sans); color:var(--muted); background:var(--surface);
+    border:1px solid var(--line); border-radius:999px; padding:10px 15px;
+    cursor:pointer; user-select:none; box-shadow:0 6px 18px rgba(35,32,27,.14);
+    transition:color .15s var(--ease), border-color .15s var(--ease), transform .12s var(--ease) }
+  .toc-fab.on{ display:inline-block }
+  .toc-fab:hover{ color:var(--accent); border-color:var(--accent-line); transform:translateY(-1px) }
+  .toc-panel{ display:none; position:fixed; right:14px; bottom:calc(112px + env(safe-area-inset-bottom)); z-index:60;
+    width:min(304px, 78vw); max-height:min(58vh, 440px); overflow:auto;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
+    box-shadow:0 16px 44px rgba(35,32,27,.20); padding:8px }
+  .toc-panel.on{ display:block }
+  .toc-h{ font-size:12px; color:var(--faint); padding:6px 8px 8px;
+    border-bottom:1px solid var(--line-soft); margin-bottom:4px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .toc-list a{ display:block; font-size:12.5px; line-height:1.5; color:var(--ink);
+    text-decoration:none; padding:6px 8px; border-radius:var(--r-sm); cursor:pointer;
+    border-left:2px solid transparent }
+  .toc-list a.lv1{ font-weight:600 }
+  .toc-list a.lv2{ padding-left:18px; color:var(--muted); font-size:12px }
+  .toc-list a:hover{ background:var(--surface-2); color:var(--accent) }
+  .toc-list a.cur{ color:var(--accent); background:var(--accent-dim);
+    border-left-color:var(--accent) }
 </style>
 </head>
 <body data-nav="cards">
@@ -154,8 +218,83 @@
   </div>
 </div>
 
+<!-- 悬浮目录：从笔记的 ## / ### 标题抽取，点击平滑跳转到对应位置（长纪要导航） -->
+<button class="toc-fab" id="tocFab" type="button" aria-label="目录">目录</button>
+<div class="toc-panel" id="tocPanel">
+  <div class="toc-h" id="tocHead">目录</div>
+  <div class="toc-list" id="tocList"></div>
+</div>
+
 <script>
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+
+// ── 轻量 markdown → HTML（零依赖）：标题 / 粗体 / 斜体 / 行内码 / 列表 / 引用 / 分隔 / 段落 ──
+// 先整体 esc 再按行解析，因此只认转义后的形态（如引用行首是 &gt;），天然防注入。
+function mdInline(s){
+  return s
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g,'$1<em>$2</em>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>');
+}
+function mdToHtml(src){
+  var lines = esc(src||'').replace(/\r/g,'').split('\n');
+  var out=[], listOpen=null;
+  function closeList(){ if(listOpen){ out.push(listOpen==='ul'?'</ul>':'</ol>'); listOpen=null; } }
+  for(var i=0;i<lines.length;i++){
+    var t = lines[i].trim();
+    if(!t){ closeList(); continue; }
+    var m;
+    if(m = t.match(/^(#{1,6})\s+(.*)$/)){            // # → h2 起（卡片内不抢 h1）
+      closeList(); var lv=m[1].length+1;
+      out.push('<h'+lv+'>'+mdInline(m[2])+'</h'+lv+'>'); continue;
+    }
+    if(/^(---+|\*\*\*+)$/.test(t)){ closeList(); out.push('<hr>'); continue; }
+    if(m = t.match(/^&gt;\s?(.*)$/)){ closeList(); out.push('<blockquote>'+mdInline(m[1])+'</blockquote>'); continue; }
+    if(m = t.match(/^[-*+]\s+(.*)$/)){
+      if(listOpen!=='ul'){ closeList(); out.push('<ul>'); listOpen='ul'; }
+      out.push('<li>'+mdInline(m[1])+'</li>'); continue;
+    }
+    if(m = t.match(/^\d+[.)]\s+(.*)$/)){
+      if(listOpen!=='ol'){ closeList(); out.push('<ol>'); listOpen='ol'; }
+      out.push('<li>'+mdInline(m[1])+'</li>'); continue;
+    }
+    closeList();
+    out.push('<p>'+mdInline(t)+'</p>');
+  }
+  closeList();
+  return out.join('');
+}
+
+// 笔记体量统计：用于「约 N 字 · M 分钟」的阅读预期提示（中文按 ~350 字/分钟估）
+function mdStats(md, upTo){
+  var seg = String(md||'').slice(0, upTo == null ? undefined : upTo);
+  var plain = seg.replace(/[#*`>\-\s\[\]()!]/g, '');
+  return { chars: plain.length, mins: Math.max(1, Math.round(plain.length / 350)) };
+}
+// 把结构化笔记按「## 内容纪要」切成「要点层」与「纪要层」：默认只展开要点层，
+// 纪要层折叠（内容一字不丢，只是延迟展示）——长文卡片不再把列表撑爆。
+function splitNote(md){
+  var lines = String(md||'').split('\n'), idx = -1;
+  for(var i=0;i<lines.length;i++){
+    if(/^##\s*内容纪要/.test(lines[i].trim())){ idx = i; break; }
+  }
+  if(idx <= 0) return { head: md, body: '', nsec: 0, hchars: 0 };
+  var head = lines.slice(0, idx).join('\n').trim();
+  var body = lines.slice(idx + 1).join('\n').trim();
+  var nsec = body.split('\n').filter(function(l){ return /^###\s+/.test(l.trim()); }).length;
+  return { head: head, body: body, nsec: nsec, hchars: mdStats(head).chars };
+}
+
+// 折叠区展开状态记忆：轮询会整表重建 DOM，若不记住，用户读一半的「内容纪要」会被冲回收起态。
+// toggle 事件不冒泡，所以用捕获阶段监听。
+var OPEN = {};
+document.addEventListener('toggle', function(e){
+  var d = e.target;
+  if(d && d.tagName === 'DETAILS' && d.dataset && d.dataset.key){
+    OPEN[d.dataset.key] = d.open;
+  }
+}, true);
+function openAttr(key){ return OPEN[key] ? ' open' : ''; }
 
 function cardHTML(it){
   var c = it.card || {};
@@ -167,6 +306,12 @@ function cardHTML(it){
   var kindPill = isCog
     ? '<span class="pill k-cog" title="认知端：抖音等内容收藏">认知</span>'
     : '<span class="pill k-prod" title="生产端：GitHub/GitLab 仓库">生产</span>';
+  var errPill = (it.status==='error')
+    ? '<span class="pill err" title="'+esc(it.error||'解析失败')+'">解析失败</span>'
+    : '';
+  var stubPill = (c._stub)
+    ? '<span class="pill stub" title="'+esc(c.stub_reason||'元数据被反爬拦截，待补充')+'">待补充</span>'
+    : '';
   var src = c.source==='llm'
     ? '<span class="src llm" title="由大模型分析生成">AI 分析</span>'
     : '<span class="src heu" title="规则自动生成的预览，未接入深度分析">规则预览</span>';
@@ -176,15 +321,38 @@ function cardHTML(it){
     return '<div class="ri"><span class="rn">'+esc(r.name||r.url)+'</span><span class="rr">'+esc(r.reason)+'</span></div>';
   }).join('');
   var starsTxt = (meta.stars!=null) ? ('<span class="stars">★ '+meta.stars+'</span>') : '';
-  // 原文逐字稿：认知端的另一半（与萃取卡片双保留），仅认知端有
+  // 逐字稿 · 结构化笔记：默认展开「概述 + 核心要点」，「内容纪要」折叠按需展开
+  // ——长文卡片不再把列表撑爆；内容一字不丢，只是分层渐进展示。
+  var tmdHtml = '';
+  if (isCog && c.transcript_md && String(c.transcript_md).trim()) {
+    var sn = splitNote(c.transcript_md);
+    var st = mdStats(c.transcript_md);
+    var nkey = 'note-'+it.id;
+    var bodyPart = '';
+    if (sn.body) {
+      var bs = mdStats(sn.body);
+      bodyPart = '<details class="mdmore" data-key="'+nkey+'"'+openAttr(nkey)
+               + '><summary>内容纪要 · '+sn.nsec+' 小节 · 约 '+bs.chars
+               + ' 字（点击展开）</summary><div class="mdbox mdbody">'+mdToHtml(sn.body)+'</div></details>';
+    }
+    tmdHtml = '<div class="row"><div class="k">逐字稿 · 结构化笔记'
+            + '<span class="note-meta">约 '+st.chars+' 字 · '+st.mins+' 分钟</span></div>'
+            + '<div class="mdbox">'+mdToHtml(sn.head)+'</div>'+bodyPart+'</div>';
+  }
+  // 原始逐字稿：折叠保留（与结构化笔记互补），仅认知端有
+  var rkey = 'raw-'+it.id;
   var rawTxt = (isCog && it.raw && String(it.raw).trim())
-    ? '<div class="row"><div class="k">原文逐字稿（与上方萃取双保留）</div><div class="rawbox">'+esc(it.raw)+'</div></div>'
+    ? '<details class="rawdet" data-key="'+rkey+'"'+openAttr(rkey)+'><summary>展开原始逐字稿（'+String(it.raw).length+' 字）</summary><div class="rawbox">'+esc(it.raw)+'</div></details>'
+    : '';
+  // 转写失败也要可见：否则 boss 会以为根本没这功能（之前就是静默 None）
+  var terrTxt = (isCog && meta.transcript_error)
+    ? '<div class="row"><div class="k">逐字稿</div><div class="err-msg">未生成：'+(esc(meta.transcript_error)||'未知原因')+'</div></div>'
     : '';
   return ''+
   '<div class="card" id="card-'+esc(it.id)+'" data-id="'+esc(it.id)+'" data-url="'+esc(it.url)+'">'+
     '<div class="top">'+
       '<div><div class="name"><a href="'+esc(it.url)+'" target="_blank" rel="noopener">'+esc(name)+'<span class="ext">↗</span></a></div><div class="url">'+esc(it.url)+'</div></div>'+
-      '<span class="pill">'+esc(domain)+'</span>'+kindPill+
+      '<span class="pill">'+esc(domain)+'</span>'+kindPill+errPill+stubPill+
       (it.__upd ? '<span class="pill upd">有更新</span>' : '')+src+
     '</div>'+
     (starsTxt?'<div class="row"><span class="v">'+starsTxt+'　'+(c.maturity?esc(c.maturity):'')+'　'+rec+'</span></div>':'')+
@@ -192,7 +360,11 @@ function cardHTML(it){
     (tech?'<div class="row"><div class="k">技术栈</div><div class="chips">'+tech+'</div></div>':'')+
     (c.why_needed?'<div class="row"><div class="k">你为什么可能需要它</div><div class="v">'+esc(c.why_needed)+'</div></div>':'')+
     (tags?'<div class="row"><div class="k">多维标签</div><div class="chips">'+tags+'</div></div>':'')+
+    (it.status==='error'?'<div class="row"><div class="k">解析失败原因</div><div class="err-msg">'+esc(it.error||'未知错误')+'</div></div>':'')+
+    (c._stub?'<div class="row"><div class="k">待补充</div><div class="stub-msg">'+esc(c.stub_reason||'元数据被反爬拦截，可在备注中补充视频文案')+'</div></div>':'')+
+    tmdHtml+
     rawTxt+
+    terrTxt+
     (rel?'<div class="rel"><div class="k">关联节点</div>'+rel+'</div>':'')+
     '<div class="row"><div class="k">后来怎么样了（只有你知道，不靠推测）</div>'+
       '<div class="acts">'+
@@ -285,6 +457,7 @@ function updateClearBtn(){
   });
 })();
 
+var _lastSig=null;   // 上一次渲染的数据指纹：相同则跳过重建（轮询不打扰阅读）
 function load(){
   var w=document.getElementById('wrap');
   var q=document.getElementById('f-q').value.trim();
@@ -299,7 +472,17 @@ function load(){
   fetch(url).then(function(r){return r.json()}).then(function(d){
     var items=d.items||[];
     document.getElementById('f-cnt').textContent='共 '+items.length+' 个仓库'+(items.length?('（已按“'+sortName(sort)+'”排序）'):'');
-    if(!items.length){ renderEmpty(); return; }
+    if(!items.length){
+      var esig='empty:'+url;
+      if(_lastSig!==esig){ _lastSig=esig; renderEmpty(); }
+      return;
+    }
+    // 关键：内容与筛选都没变时**不重建 DOM**。
+    // 否则每 8s 一次的轮询会把整张卡片表 innerHTML 重写一遍，正在阅读的
+    // 折叠区被收回、选中文字被清掉、滚动位置被顶走 —— 用户体感就是「读一半自己折起来了」。
+    var sig=url+'\n'+JSON.stringify(items)+'\n'+JSON.stringify(window.__repoUpdates||{});
+    if(sig===_lastSig) return;
+    _lastSig=sig;
     render(items);
   }).catch(function(){ w.innerHTML='<div class="empty">加载失败，确认服务在运行。</div>'; });
 }
@@ -344,10 +527,14 @@ function closeMenu(el){
 
 function render(items){
   var w=document.getElementById('wrap');
+  var sy=window.scrollY||0;   // 重建前记住视口位置，重建后复位：避免新增卡片把正在读的位置顶走
   // 标注哪些卡片有未读更新（来自全局 window.__repoUpdates）
   items.forEach(function(it){ it.__upd = !!window.__repoUpdates[String(it.id)]; });
   w.innerHTML=items.map(cardHTML).join('');
   applyUpdateBadges();
+  buildTOC();                    // 重建后重新抽取目录（标题锚点 id 也要重挂）
+  if(sy>0) window.scrollTo(0, sy);
+  updateTocFab();
   // 重建后恢复仍在重算中的卡片按钮状态（防止并发重算被整页刷新冲掉）
   Object.keys(REGEN).forEach(function(rid){
     var btn=w.querySelector('#card-'+cssId(rid)+' .abtn[data-act="regen"]');
@@ -531,6 +718,111 @@ document.addEventListener('click', function(e){
     }
   });
 }, true);
+
+// ══ 悬浮目录：从笔记标题（## / ###）抽取，点击跳转到对应位置 ══
+var TOC = {};          // cardId -> [{id, lvl, text, det}]
+var _tocRaf = 0;
+
+function buildTOC(){
+  TOC = {};
+  Array.prototype.forEach.call(document.querySelectorAll('#wrap .card'), function(card){
+    var cid = card.getAttribute('data-id');
+    var hs = card.querySelectorAll('.mdbox h3, .mdbox h4');   // h2 是笔记标题，不入目录
+    var list = [];
+    Array.prototype.forEach.call(hs, function(h, i){
+      var hid = 'h-' + cid + '-' + i;
+      h.id = hid;
+      var det = h.closest('details');                          // 标题若在折叠层里，记下 key
+      list.push({ id: hid, lvl: h.tagName === 'H4' ? 2 : 1,
+                  text: h.textContent.trim(),
+                  det: det ? (det.getAttribute('data-key') || '') : '' });
+    });
+    if(list.length) TOC[cid] = list;
+  });
+}
+
+function activeTocCard(){
+  var best = null, bestD = Infinity;
+  Array.prototype.forEach.call(document.querySelectorAll('#wrap .card'), function(card){
+    if(!TOC[card.getAttribute('data-id')]) return;
+    var r = card.getBoundingClientRect();
+    if(r.bottom < 140) return;                                 // 已滚过这张
+    var d = Math.abs(r.top - 60);
+    if(d < bestD){ bestD = d; best = card; }
+  });
+  return best;
+}
+
+function currentHeadingId(cid){
+  var list = TOC[cid] || [], cur = list.length ? list[0].id : '';
+  for(var i = 0; i < list.length; i++){
+    var el = document.getElementById(list[i].id);
+    if(!el) continue;
+    if(el.getBoundingClientRect().top <= 96) cur = list[i].id; else break;
+  }
+  return cur;
+}
+
+function renderTocPanel(card){
+  var cid = card.getAttribute('data-id');
+  var nameEl = card.querySelector('.name');
+  var name = nameEl ? nameEl.textContent.trim() : '';
+  document.getElementById('tocHead').textContent = name ? ('目录 · ' + name) : '目录';
+  var cur = currentHeadingId(cid);
+  document.getElementById('tocList').innerHTML = (TOC[cid] || []).map(function(it){
+    return '<a class="lv' + it.lvl + (it.id === cur ? ' cur' : '') +
+           '" data-h="' + it.id + '" data-det="' + it.det + '">' + esc(it.text) + '</a>';
+  }).join('');
+}
+
+function tocJump(hid, detKey){
+  if(detKey){                                                  // 目标在折叠的纪要层里 → 先展开
+    OPEN[detKey] = true;
+    var d = document.querySelector('details[data-key="' + detKey + '"]');
+    if(d) d.open = true;
+  }
+  var el = document.getElementById(hid);
+  if(el){
+    // 等一帧：若刚展开了折叠层，布局更新后再滚动，否则会按展开前的位置跳偏
+    requestAnimationFrame(function(){
+      el.scrollIntoView({behavior:'smooth', block:'start'});
+    });
+  }
+  document.getElementById('tocPanel').classList.remove('on');
+}
+
+function updateTocFab(){
+  var card = activeTocCard();
+  var fab = document.getElementById('tocFab');
+  if(fab) fab.classList.toggle('on', !!card);
+  var panel = document.getElementById('tocPanel');
+  if(!card){ if(panel) panel.classList.remove('on'); return; }
+  if(panel && panel.classList.contains('on')) renderTocPanel(card);
+}
+
+document.getElementById('tocFab').addEventListener('click', function(){
+  var panel = document.getElementById('tocPanel');
+  if(panel.classList.contains('on')){ panel.classList.remove('on'); return; }
+  var card = activeTocCard();
+  if(!card) return;
+  renderTocPanel(card);
+  panel.classList.add('on');
+});
+document.getElementById('tocList').addEventListener('click', function(e){
+  var a = e.target && e.target.closest ? e.target.closest('a[data-h]') : null;
+  if(a) tocJump(a.getAttribute('data-h'), a.getAttribute('data-det'));
+});
+document.addEventListener('click', function(e){                 // 点面板外收起
+  var panel = document.getElementById('tocPanel');
+  if(!panel.classList.contains('on')) return;
+  var t = e.target;
+  if(t && t.closest && (t.closest('#tocPanel') || t.closest('#tocFab'))) return;
+  panel.classList.remove('on');
+}, true);
+window.addEventListener('scroll', function(){
+  if(_tocRaf) return;
+  _tocRaf = requestAnimationFrame(function(){ _tocRaf = 0; updateTocFab(); });
+}, {passive:true});
 
 loadFacets();
 load();

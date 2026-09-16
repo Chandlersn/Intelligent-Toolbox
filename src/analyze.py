@@ -59,12 +59,16 @@ def llm_status():
     return st
 
 
-def _llm_chat(system, user, timeout=None, retries=None):
+def _llm_chat(system, user, timeout=None, retries=None, max_tokens=None, use_cache=None):
     """全项目唯一的 llm.chat 调用点：懒加载 → 调用 → 解包 content。
 
     返回字符串，或 None（模块不可用 / 抛异常 / 空返回）。
     为什么集中：改造前 4 个调用点各写一遍 try/except + 元组解包，且都没传超时，
     一旦上游接口半死，worker 线程会一直挂着。超时预算现在统一从 config 来。
+
+    max_tokens/use_cache：llm.chat 默认 max_tokens=600，长输出（如逐字稿结构化笔记）
+    会被从中间硬截断 —— 需要长输出的调用点必须显式调大。另外 llm.chat 的缓存 key
+    不含 max_tokens，改大后必须 use_cache=False，否则会命中旧的截断结果。
     """
     llm_mod = _load_llm()
     if llm_mod is None:
@@ -74,6 +78,10 @@ def _llm_chat(system, user, timeout=None, retries=None):
         kw["timeout"] = timeout
     if retries is not None:
         kw["retries"] = retries
+    if max_tokens is not None:
+        kw["max_tokens"] = max_tokens
+    if use_cache is not None:
+        kw["use_cache"] = use_cache
     try:
         resp = llm_mod.chat(system, user, **kw)
     except Exception:
@@ -141,18 +149,22 @@ def _llm_card(meta, note, item_id, conn, timeout=None, retries=None, kind="produ
         author = meta.get("author") or ""
         desc = meta.get("description") or ""
         transcript = meta.get("transcript") or ""
+        _example_c = json.dumps(
+            {"domain": "知识/笔记", "purpose": "用卡片法系统整理读书笔记，建立知识关联",
+             "tech_stack": [], "why_needed": "想把零散的读书摘抄沉淀成可检索的知识网",
+             "maturity": "活跃", "tags": ["读书", "笔记法", "学习方法"], "recommendation": 4},
+            ensure_ascii=False)
         system = (
             "你是内容分析助手。用户收藏了一段短视频/文章类认知内容（如抖音、教程），"
             "需要给出结构化、克制、不说废话的多维卡片。严格只输出 JSON，不要任何解释或 Markdown。"
-            "字段：domain(领域，从[AI·LLM, Web 框架, 前端/UI, DevOps/云, 数据库, CLI/工具, "
-            "移动端, 安全, 数据/可视化, 知识/笔记, 未分类]选一), "
+            "字段：domain(领域，从[%s]选最接近的一个；仅当完全无法归类时才用「未分类」，不要偷懒用它), "
             "purpose(一句话说清这段内容讲什么/解决什么认知问题), "
             "tech_stack(涉及的技术/工具数组，最多6，没有则[]), "
-            "why_needed(为什么用户可能需要它，结合备注，90字内), "
-            "related_hint(基于已知领域，给1句关联方向建议), "
+            "why_needed(为什么用户可能需要它；用户备注是其真实意图，必须优先参考，90字内), "
             "maturity(顶级/成熟/活跃/新兴/未知), "
             "tags(标签数组，最多8), recommendation(0-5整数，内容质量与相关性自评)。"
-        )
+            "\n示例：一条讲「卡片笔记法」的抖音视频 → " + _example_c
+        ) % "、".join(KNOWN_DOMAINS)
         user = "标题：%s\n作者：%s\n简介：%s\n逐字稿：%s\n用户备注：%s\n%s" % (
             title, author, desc,
             (transcript[:4000] if transcript else "（无逐字稿）"),
@@ -168,21 +180,29 @@ def _llm_card(meta, note, item_id, conn, timeout=None, retries=None, kind="produ
         lang = meta.get("language") or "未知"
         stars = meta.get("stars") or 0
         topics = ", ".join(str(t) for t in (meta.get("topics") or [])) or "无"
+        _example = json.dumps(
+            {"domain": "知识/笔记", "purpose": "本地优先的个人知识库，自动分类与关联收藏",
+             "tech_stack": ["Python", "SQLite"],
+             "why_needed": "想给自己的收藏做结构化沉淀，避免收藏即遗忘",
+             "maturity": "新兴 · 近一年有更新",
+             "tags": ["知识管理", "个人工具", "Python"], "recommendation": 3},
+            ensure_ascii=False)
         system = (
             "你是仓库分析助手。用户收藏开源仓库，你需要给出结构化、克制、不说废话的多维卡片。"
             "严格只输出 JSON，不要任何解释或 Markdown 代码块标记。字段："
-            "domain(领域，从[AI·LLM, Web 框架, 前端/UI, DevOps/云, 数据库, CLI/工具, 移动端, 安全, 数据/可视化, 知识/笔记, 未分类]选一), "
+            "domain(领域，从[%s]选最接近的一个；仅当完全无法归类时才用「未分类」，不要偷懒用它), "
             "purpose(一句话说清这仓库解决什么问题), "
             "tech_stack(技术栈数组，最多6), "
-            "why_needed(为什么用户可能需要它，结合备注，90字内), "
-            "related_hint(基于已知领域，给1句关联方向建议), "
-            "maturity(顶级/成熟/活跃/新兴/未知 + 可选' · 近一年有更新'), "
+            "why_needed(为什么用户可能需要它；用户备注是其真实意图，必须优先参考，90字内), "
+            "maturity(顶级/成熟/活跃/新兴/未知 + 可选' · 近一年有更新'，可结合 Stars 与更新时间判断), "
             "tags(标签数组，最多8), "
             "recommendation(0-5整数，综合热度与时效)。"
-        )
+            "\n示例：仓库「lantern-caliper」描述「个人双尺度知识库，自带引擎」→ " + _example
+        ) % "、".join(KNOWN_DOMAINS)
+        pushed = meta.get("pushed_at") or "未知"
         user = (
-            "仓库：%s\n描述：%s\n主语言：%s\nStars：%s\nTopics：%s\n用户备注：%s\n%s"
-            % (name, desc, lang, stars, topics, note or "（无）", ctx)
+            "仓库：%s\n描述：%s\n主语言：%s\nStars：%s\nTopics：%s\n最近更新：%s\n用户备注：%s\n%s"
+            % (name, desc, lang, stars, topics, pushed, note or "（无）", ctx)
         )
         fallback_domain_text = _text_blob(meta)
         fallback_tech = detect_tech_stack(meta)
@@ -198,7 +218,8 @@ def _llm_card(meta, note, item_id, conn, timeout=None, retries=None, kind="produ
     if not obj:
         return None, False
     # 规整成标准卡片结构（两类共用）
-    domain = obj.get("domain") or detect_domain_text(fallback_domain_text)
+    raw_domain = obj.get("domain")
+    domain = raw_domain if raw_domain and raw_domain != "未分类" else detect_domain_text(fallback_domain_text)
     card = {
         "domain": domain,
         "purpose": obj.get("purpose") or desc,
@@ -220,7 +241,8 @@ def _llm_card(meta, note, item_id, conn, timeout=None, retries=None, kind="produ
 # 已收录的领域白名单（与 GAP_COOCCUR / _llm_card 保持一致）。
 KNOWN_DOMAINS = [
     "AI·LLM", "Web 框架", "前端/UI", "DevOps/云", "数据库",
-    "CLI/工具", "移动端", "安全", "数据/可视化", "知识/笔记", "未分类",
+    "CLI/工具", "移动端", "安全", "数据/可视化", "知识/笔记",
+    "生活/兴趣", "理财/投资", "历史/人文", "未分类",
 ]
 
 
@@ -312,7 +334,14 @@ DOMAIN_KEYWORDS = {
                    "数据", "可视化", "图表", "分析", "报表", "看板"],
     "知识/笔记": ["knowledge", "note", "notebook", "wiki", "second-brain",
                   "pkm", "markdown", "docs", "documentation",
-                  "笔记", "知识", "学习", "教程", "读书", "复盘", "方法论"],
+                  "笔记", "知识", "学习", "教程", "读书", "复盘", "方法论",
+                  "收藏", "认知", "知识管理", "个人工具"],
+    "生活/兴趣": ["生活", "日常", "美食", "旅行", "健康", "健身", "兴趣", "爱好",
+                  "家居", "宠物", "lifestyle", "food", "travel", "health", "fitness"],
+    "理财/投资": ["理财", "投资", "股票", "基金", "crypto", "区块链", "比特币",
+                  "财富", "储蓄", "保险", "finance", "invest", "trading", "bitcoin"],
+    "历史/人文": ["历史", "人文", "文化", "哲学", "社会", "心理", "传记",
+                  "考古", "宗教", "history", "philosophy", "psychology", "culture"],
 }
 
 # 非技术型、仅作修饰的 topic，不进 tech_stack 展示
@@ -684,6 +713,124 @@ def _kind_of_meta(meta):
     return "cognition" if (meta or {}).get("platform") in ("douyin", "web") else "production"
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  逐字稿 → 结构化 markdown 笔记
+# ═══════════════════════════════════════════════════════════════════
+TRANSCRIPT_MD_SYSTEM = """你是知识整理助手。把用户给的口语逐字稿整理成结构化 markdown 笔记。
+
+硬性要求：
+- 只依据逐字稿原文，绝不编造原文没有的信息、数字或结论。
+- **必须覆盖逐字稿的全部内容，从开头到结尾**：宁可把后半段写得更凝练，也绝不能中途停笔、不能只整理前半段。
+- 输出纯 markdown，不要用 ``` 代码围栏包裹。
+- 结构：# <内容主题做标题>（不要用"逐字稿"当标题）→ ## 概述（1-3 句）→ ## 核心要点（3-8 条「-」列表）→ ## 内容纪要（按内容推进分 ### 小节，每节用要点或精炼短句复述，小节要能看出全文脉络与结论）。
+- 保留关键人名/机构/数字/结论；删除口头禅、语气词与重复啰嗦，但不得丢失关键信息。
+- 全文简体中文，篇幅以把内容讲全为准（通常 1200-3000 字）。"""
+
+# 超长逐字稿分块整理时用：每块只要片段纪要，避免每块都重复标题/概述
+TRANSCRIPT_MD_CHUNK_SYSTEM = """你是知识整理助手。用户会分块给出一份长逐字稿。
+请只针对「本次给到的这一段」输出 markdown 纪要：
+- 用 ### 小节 + 「-」要点，忠实复述本段内容，保留人名/机构/数字/结论。
+- 不要写整体标题、不要写「概述」或「核心要点」，不要臆测其它段落的内容。
+- 只依据本段原文，不编造；输出纯 markdown，不要 ``` 围栏。"""
+
+# 分块纪要合并后，补写总览（概述 + 核心要点）
+TRANSCRIPT_MD_HEAD_SYSTEM = """你是知识整理助手。下面是同一份长逐字稿的多个分段纪要。
+请只依据这些分段纪要，输出两节 markdown：
+## 概述（1-3 句，概括整份内容）
+## 核心要点（3-8 条「-」列表，覆盖全文主线）
+只输出这两节，不要重复各段纪要的细节，不要编造原文没有的信息。"""
+
+
+def _strip_fence(s):
+    """剥掉 LLM 可能残留的 ``` 围栏（含语言行），返回纯 markdown。"""
+    s = (s or "").strip()
+    if s.startswith("```"):
+        s = s[3:]
+        nl = s.find("\n")
+        if nl != -1 and nl < 12:          # 第一行是语言标记（md/json/markdown）
+            s = s[nl + 1:]
+        s = s.rstrip("`").strip()
+    return s
+
+
+def _split_transcript(transcript, size):
+    """按句末标点把逐字稿切成每块 <=size 的块，绝不从句子中间切断。"""
+    text = (transcript or "").strip()
+    if len(text) <= size:
+        return [text]
+    # 先按句末标点 / 换行切句，再贪心聚合成块
+    sentences = [s for s in re.split(r"(?<=[。！？!?\n])", text) if s]
+    chunks, cur = [], ""
+    for s in sentences:
+        if cur and len(cur) + len(s) > size:
+            chunks.append(cur)
+            cur = s
+        else:
+            cur += s
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _heuristic_transcript_md(transcript):
+    """无 LLM 时的兜底：把流水句按句末标点切分，三句一段，套 markdown 标题。
+
+    纯字符串处理、零依赖、确定性 —— 保证「结构化展示」在 LLM 不可用时仍有可用形态。
+    """
+    flat = re.sub(r"\s+", "", transcript or "")
+    if not flat:
+        return None
+    sentences = [s for s in re.split(r"(?<=[。！？!?])", flat) if s]
+    paras = ["".join(sentences[i:i + 3]) for i in range(0, len(sentences), 3)]
+    return "## 逐字稿\n\n" + "\n\n".join(paras)
+
+
+def build_transcript_md(transcript, meta=None, timeout=None, retries=None, max_tokens=None):
+    """把口语逐字稿整理成结构化 markdown 笔记（完整、通顺，绝不做字数硬截断）。
+
+    - 短/中篇（<= TRANSCRIPT_MD_SINGLE_MAX）：一次成稿。
+    - 超长：按句切块 → 每块纪要 → 补总览 → 合并，保证篇末内容不丢。
+    - LLM 不可用/失败：回退启发式分段（仍是全文，不截断）。
+
+    max_tokens 必须显式调大：llm.chat 默认 600，会把笔记从中间硬截断；
+    且其缓存 key 不含 max_tokens，所以一并 use_cache=False 避免命中旧的截断结果。
+    """
+    transcript = (transcript or "").strip()
+    if not transcript:
+        return None
+    title = ((meta or {}).get("title") or "").strip()
+    mt = max_tokens or getattr(config, "TRANSCRIPT_MD_MAX_TOKENS", 4000)
+    to = timeout if timeout is not None else getattr(config, "TRANSCRIPT_MD_TIMEOUT", 60)
+    single_max = getattr(config, "TRANSCRIPT_MD_SINGLE_MAX", 30000)
+    chunks = _split_transcript(transcript, single_max)
+    # 1) 常规长度：一次成稿
+    if len(chunks) == 1:
+        user = ("标题：%s\n\n逐字稿：\n%s" % (title[:200], transcript)).strip()
+        out = _strip_fence(_llm_chat(TRANSCRIPT_MD_SYSTEM, user, timeout=to, retries=retries,
+                                     max_tokens=mt, use_cache=False))
+        return out or _heuristic_transcript_md(transcript)
+    # 2) 超长：分块纪要（每块都覆盖），任一块失败也不丢其余内容
+    parts = []
+    for i, ch in enumerate(chunks):
+        seg = _strip_fence(_llm_chat(
+            TRANSCRIPT_MD_CHUNK_SYSTEM,
+            "（第 %d/%d 段）\n\n%s" % (i + 1, len(chunks), ch),
+            timeout=to, retries=retries, max_tokens=mt, use_cache=False))
+        if seg:
+            parts.append(seg)
+    if not parts:
+        return _heuristic_transcript_md(transcript)
+    # 补一节总览（概述 + 要点），让合并稿依然通顺；失败则省略该节
+    head = _strip_fence(_llm_chat(TRANSCRIPT_MD_HEAD_SYSTEM, "\n\n".join(parts),
+                                  timeout=to, retries=retries,
+                                  max_tokens=min(mt, 1500), use_cache=False))
+    body = "# %s\n\n" % (title or "逐字稿纪要")
+    if head:
+        body += head + "\n\n"
+    body += "## 内容纪要\n\n" + "\n\n".join(parts)
+    return body
+
+
 def build_card(meta, note, item_id, conn, timeout=None, retries=None, kind=None):
     """生成多维分析卡片。优先 LLM（灯笼 llm 模块），失败回退启发式。
 
@@ -696,6 +843,9 @@ def build_card(meta, note, item_id, conn, timeout=None, retries=None, kind=None)
     """
     meta = meta or {}
     kind = kind or _kind_of_meta(meta)
+    # 逐字稿结构化笔记由 worker 在后台生成（预算充足）后放进 meta.transcript_md，这里只做透传：
+    # 交互端「重算」预算很短，不能在此重新生成，否则会把已生成的完整笔记降级成启发式版本。
+    tmd = meta.get("transcript_md") if kind == "cognition" else None
     # 1) 先试 LLM（复用灯笼 key 配置）
     llm_card, ok = _llm_card(meta, note, item_id, conn, timeout=timeout, retries=retries, kind=kind)
     if ok and llm_card:
@@ -703,6 +853,8 @@ def build_card(meta, note, item_id, conn, timeout=None, retries=None, kind=None)
         llm_card["related_nodes"] = _related_for(
             meta, note, item_id, conn, timeout=timeout, retries=retries,
             domain=llm_card.get("domain"))
+        if tmd:
+            llm_card["transcript_md"] = tmd
         return llm_card
     # 2) 回退：启发式规则卡片
     if kind == "cognition":
@@ -723,6 +875,7 @@ def build_card(meta, note, item_id, conn, timeout=None, retries=None, kind=None)
             "domain": domain, "purpose": purpose, "tech_stack": tech_stack,
             "why_needed": why, "related_nodes": related, "maturity": maturity,
             "tags": tags, "recommendation": recommendation, "source": "heuristic",
+            "transcript_md": tmd,
         }
     # 生产端启发式
     domain = detect_domain(meta)

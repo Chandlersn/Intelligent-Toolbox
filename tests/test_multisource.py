@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from common import Base  # noqa: E402  — 先把 src/ 加进 sys.path，下面才能 import 业务模块
 
@@ -108,6 +109,119 @@ class TestDouyinSource(unittest.TestCase):
         with self.assertRaises(ValueError):
             douyin_source._parse_router_data("<html>no router data here</html>")
 
+    def test_parse_router_data_empty_raises(self):
+        # 抖音对无效/已删视频仍返回空壳 videoInfoRes（_ROUTER_DATA 在，但内容全空）。
+        # 不能生成占位标题的垃圾卡，必须如实报错。
+        data = {"loaderData": {"video_(id)/page": {"videoInfoRes": {
+            "aweme_id": "", "item_list": [{}]}}}}
+        html = ('<html><body><script>window._ROUTER_DATA = '
+                + json.dumps(data) + '</script></body></html>')
+        with self.assertRaises(ValueError) as ctx:
+            douyin_source._parse_router_data(html)
+        self.assertIn("信息为空", str(ctx.exception))
+
+    def test_parse_router_data_placeholder_shell_honest(self):
+        # 真实抖音链接经浏览器渲染后：_ROUTER_DATA 在，但 videoInfoRes 为空、页面标题是占位符
+        # 『在抖音记录美好生活』——这是视频详情接口（iteminfo）被反爬签名拦截，纯抓取拿不到数据。
+        # 必须如实报『反爬签名拦截』，绝不能误诊成『已删除/私密』。
+        data = {"loaderData": {"video_(id)/page": {"ua": "x", "query": {}}}}
+        html = ('<html><head><title>在抖音记录美好生活20260916 - 抖音</title></head>'
+                '<body><script>window._ROUTER_DATA = '
+                + json.dumps(data) + '</script></body></html>')
+        with self.assertRaises(ValueError) as ctx:
+            douyin_source._parse_router_data(html)
+        msg = str(ctx.exception)
+        self.assertIn("反爬签名拦截", msg)
+        self.assertNotIn("已删除", msg)
+        self.assertNotIn("设为私密", msg)
+
+    # ---- 反爬挑战页：必须说真话，不能误诊为『删除/私密』 ----
+    def test_challenge_page_detection(self):
+        challenge = ('<html><head><title>在抖音记录美好生活</title></head>'
+                     '<body>__ac_signature</body></html>')
+        self.assertTrue(douyin_source._looks_like_challenge(challenge))
+        # 真实内容页不应被误判为挑战页
+        self.assertFalse(douyin_source._looks_like_challenge(_ROUTER_HTML))
+
+    def test_challenge_page_honest_error(self):
+        challenge = ('<html><head><title>在抖音记录美好生活</title></head>'
+                     '<body>__ac_signature placeholder</body></html>')
+        with self.assertRaises(ValueError) as ctx:
+            douyin_source._parse_router_data(challenge)
+        msg = str(ctx.exception)
+        self.assertIn("反爬挑战", msg)
+        # 关键：挑战页绝不能误诊成『删除/私密』
+        self.assertNotIn("已删除", msg)
+        self.assertNotIn("设为私密", msg)
+
+    def test_rendered_page_with_ac_signature_not_misjudged(self):
+        # 浏览器渲染后的真实页会残留 __ac_signature 字符串，但 _ROUTER_DATA 已注入。
+        # 绝不能把这种页误判为挑战页 —— 必须先认 _ROUTER_DATA。
+        html = _ROUTER_HTML.replace(
+            "<html>", '<html><script>var __ac_signature="abc";</script>')
+        info = douyin_source._parse_router_data(html)
+        self.assertEqual(info["video_id"], "730000000000000")
+        self.assertEqual(info["author"], "测试作者")
+
+    def test_meta_fallback_only_on_real_page(self):
+        # 挑战页 → 退化兜底返回 None（仍是拦截壳子，无可用信息）
+        challenge = ('<html><head><title>在抖音记录美好生活</title></head>'
+                     '<body>__ac_signature</body></html>')
+        self.assertIsNone(douyin_source._parse_meta_fallback(challenge))
+        # 有 og 标签的真实页（无 videoInfoRes）→ 返回『部分 meta』
+        real = ('<html><head><title>正常标题</title>'
+                '<meta property="og:title" content="一条真实视频">'
+                '<meta property="og:description" content="真实简介">'
+                '<meta property="og:image" content="https://img/x.jpg">'
+                '</head><body></body></html>')
+        fb = douyin_source._parse_meta_fallback(real)
+        self.assertIsNotNone(fb)
+        self.assertTrue(fb["_partial"])
+        self.assertEqual(fb["title"], "一条真实视频")
+        self.assertEqual(fb["desc"], "真实简介")
+        self.assertEqual(fb["cover"], "https://img/x.jpg")
+
+    def test_resolve_douyin_challenge_raises_honest(self):
+        # monkeypatch 网络层：短链 302 出带 id 的真实页、分享页返回挑战壳子，
+        # 并把 _fetch_with_browser 置为不可用，验证 resolve_douyin 透传诚实的『反爬挑战』错误而非误诊。
+        challenge = ('<html><head><title>在抖音记录美好生活</title></head>'
+                     '<body>__ac_signature</body></html>')
+
+        class _Resp:
+            def geturl(self):
+                return "https://www.douyin.com/video/7301234567890123456"
+
+        with mock.patch.object(
+                douyin_source.urllib.request, "urlopen", lambda *a, **k: _Resp()), \
+                mock.patch.object(
+                douyin_source, "_get", lambda u, timeout=8: challenge), \
+                mock.patch.object(
+                douyin_source, "_fetch_with_browser", lambda u, timeout=25: None):
+            with self.assertRaises(ValueError) as ctx:
+                douyin_source.resolve_douyin("https://v.douyin.com/abc/")
+            self.assertIn("反爬挑战", str(ctx.exception))
+
+    def test_resolve_douyin_uses_browser_fallback(self):
+        # 集成验证：标准库拿到挑战壳子 → _fetch_with_browser 返回带 _ROUTER_DATA 的渲染页 →
+        # 解析出完整卡片（证明浏览器兜底链路打通，不再误诊）。
+        challenge = ('<html><head><title>在抖音记录美好生活</title></head>'
+                     '<body>__ac_signature</body></html>')
+
+        class _Resp:
+            def geturl(self):
+                return "https://www.douyin.com/video/7301234567890123456"
+
+        with mock.patch.object(
+                douyin_source.urllib.request, "urlopen", lambda *a, **k: _Resp()), \
+                mock.patch.object(
+                douyin_source, "_get", lambda u, timeout=8: challenge), \
+                mock.patch.object(
+                douyin_source, "_fetch_with_browser", lambda u, timeout=25: _ROUTER_HTML):
+            info = douyin_source.resolve_douyin("https://v.douyin.com/abc/")
+        self.assertEqual(info["video_id"], "730000000000000")
+        self.assertEqual(info["author"], "测试作者")
+        self.assertIn("play", info["play_url"])
+
     def test_is_douyin(self):
         self.assertTrue(douyin_source.is_douyin("https://v.douyin.com/abc/"))
         self.assertTrue(douyin_source.is_douyin("https://www.iesdouyin.com/share/video/1"))
@@ -157,10 +271,36 @@ class TestDouyinSource(unittest.TestCase):
         self.assertEqual(raw, "逐字稿内容")
         self.assertEqual(meta["platform"], "douyin")
 
+    def test_collect_douyin_transcribe_empty_is_visible(self):
+        """转写返回空（纯音乐/无旁白/模型未就绪）绝不能静默成 None —— 必须落到 transcript_error，
+        否则用户会以为『这功能没有逐字稿』。这是真实踩过的坑。"""
+        orig_resolve = douyin_source.resolve_douyin
+        orig_dl = douyin_source.download_video
+        orig_ax = douyin_source.extract_audio
 
-# ═══════════════════════════════════════════════════════════════════
-#  认知端卡片生成（启发式回退）
-# ═══════════════════════════════════════════════════════════════════
+        def fake_dl(play_url, out_path, timeout=30):
+            open(out_path, "wb").close()
+            return out_path
+
+        def fake_ax(video_path, audio_path, ffmpeg="ffmpeg"):
+            open(audio_path, "wb").close()
+            return audio_path
+
+        douyin_source.resolve_douyin = self._fake_resolve
+        douyin_source.download_video = fake_dl
+        douyin_source.extract_audio = fake_ax
+        try:
+            meta, raw = douyin_source.collect_douyin(
+                "https://v.douyin.com/abc/",
+                transcribe_fn=lambda p: "", media_dir=None)
+        finally:
+            douyin_source.resolve_douyin = orig_resolve
+            douyin_source.download_video = orig_dl
+            douyin_source.extract_audio = orig_ax
+        self.assertIsNone(raw)
+        self.assertIn("transcript_error", meta)
+        self.assertTrue(meta["transcript_error"])
+
 class TestCognitionCard(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -182,6 +322,38 @@ class TestCognitionCard(unittest.TestCase):
         # 中文逐字稿应落到 Web 框架（后端/接口/知识库）
         self.assertEqual(card["domain"], "Web 框架")
         self.assertEqual(card["tech_stack"], [])  # 认知端无 tech_stack
+
+    def test_transcript_md_heuristic_fallback(self):
+        """LLM 不可用时，逐字稿仍要有可用的结构化 markdown（按句分段），不能返回 None。"""
+        run_on = "第一句话讲投资窗口。" * 4 + "第二句话讲大模型演进。" * 4
+        md = analyze.build_transcript_md(run_on, {"title": "AI 投资"})
+        self.assertTrue(md)
+        self.assertTrue(md.startswith("## "))          # 有 markdown 标题
+        self.assertIn("\n\n", md)                      # 已段落化
+        self.assertIn("投资窗口", md)                  # 内容未丢
+
+    def test_cognition_card_passes_through_transcript_md(self):
+        """结构化笔记由 worker 生成、build_card 只透传 —— 认知端卡片要把它带到 card 上。"""
+        note_md = "# AI 投资机会\n\n## 概述\n讲了算力与存储。\n\n## 核心要点\n- 估值可能翻十倍"
+        meta = {"platform": "douyin", "title": "AI 浪潮下的投资机会",
+                "transcript": "指数从两千六涨到四千。" * 3, "transcript_md": note_md}
+        card = analyze.build_card(meta, "", 1, None, kind="cognition")
+        self.assertEqual(card["transcript_md"], note_md)
+
+    def test_split_transcript_never_cuts_mid_sentence(self):
+        """超长逐字稿分块必须在句末切，且不丢字符（保证篇末内容不丢）。"""
+        text = "这是第一句话。这是第二句话！这是第三句话？这是第四句话。" * 40
+        chunks = analyze._split_transcript(text, 60)
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual("".join(chunks), text)                     # 一字不丢
+        for c in chunks[:-1]:
+            self.assertTrue(c.endswith(("。", "！", "？", "\n")))    # 不在句子中间断
+
+    def test_production_card_has_no_transcript_md(self):
+        """生产端（GitHub 仓库）没有逐字稿，不应生成该字段（避免空 markdown 区块）。"""
+        meta = {"name": "foo/bar", "description": "a lib"}
+        card = analyze.build_card(meta, "", 1, None, kind="production")
+        self.assertFalse(card.get("transcript_md"))
 
     def test_kind_inferred_from_meta(self):
         meta = {"platform": "douyin", "title": "t", "description": "d",

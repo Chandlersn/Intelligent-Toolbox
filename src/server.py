@@ -78,6 +78,8 @@ def init_db():
     # raw 存放原文（认知端的逐字稿），与 card（萃取）双保留。
     db.ensure_column(conn, "repos", "kind", "TEXT DEFAULT 'production'")
     db.ensure_column(conn, "repos", "raw", "TEXT")
+    # 解析失败原因（抖音/网页解析异常时记录，便于前端直接展示，不再「永久卡 queued」）
+    db.ensure_column(conn, "repos", "error", "TEXT")
     # 仓库更新事件：本地比对新旧 GitHub 元数据后落下的变化，供前端做「反馈消息」。
     # seen=0 表示用户还没看；反复检查不会重复刷屏（同仓同类型未读事件只保留最新一条）。
     c.execute(
@@ -638,7 +640,7 @@ def get_cards(filters, conn=None):
     own = conn is None
     conn = conn or db.connect()
     c = conn.cursor()
-    c.execute("SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw "
+    c.execute("SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw,error "
               "FROM repos ORDER BY id DESC")
     rows = c.fetchall()
     c.execute("SELECT repo_id, axis_key, value FROM repo_axis")
@@ -685,7 +687,7 @@ def get_cards(filters, conn=None):
             meta, card = None, None
         it = {"id": r[0], "url": r[1], "note": r[2], "status": r[3],
               "meta": meta, "card": card, "created_at": r[6], "feedback": r[7],
-              "kind": r[8] or "production", "raw": r[9]}
+              "kind": r[8] or "production", "raw": r[9], "error": r[10]}
         if not match_layer(it["id"], "domain", filters.get("domain", [])):
             continue
         if not match_layer(it["id"], "tech", filters.get("tech", [])):
@@ -909,6 +911,23 @@ def _transcribe_engine(audio_path):
     return douyin_source.transcribe(audio_path, engine="whisper")
 
 
+def _enrich_transcript_md(meta):
+    """给认知端内容补「结构化逐字稿笔记」。
+
+    放在 worker（后台）里做：这段 LLM 调用输出长（要覆盖全文），需要比出卡更足的预算
+    （config.TRANSCRIPT_MD_TIMEOUT / MAX_TOKENS）——交互端「重算」的短预算扛不住，
+    所以只在这里生成，build_card 仅透传 meta.transcript_md。
+    """
+    tr = (meta or {}).get("transcript")
+    if tr and not (meta or {}).get("transcript_md"):
+        try:
+            meta["transcript_md"] = analyze.build_transcript_md(
+                tr, meta, timeout=config.TRANSCRIPT_MD_TIMEOUT)
+        except Exception:
+            meta["transcript_md"] = None
+    return meta
+
+
 def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
     """后台异步：拉取元数据 → 生成多维分析卡片 → 落库 → 同步轴表。
 
@@ -922,36 +941,75 @@ def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
     """
     conn = db.connect()
     c = conn.cursor()
-    if kind == "douyin":
-        meta, raw = douyin_source.collect_douyin(
-            url, transcribe_fn=transcribe_fn or _transcribe_engine,
-            media_dir=config.MEDIA_DIR or None)
-        if raw:
-            meta["transcript"] = raw
-        card = analyze.build_card(meta, note, item_id, conn, kind="cognition")
-        status = "carded" if meta.get("title") else "pending_meta"
-        c.execute("UPDATE repos SET meta=?, card=?, status=?, raw=?, kind='cognition' WHERE id=?",
-                  (json.dumps(meta, ensure_ascii=False),
-                   json.dumps(card, ensure_ascii=False), status, raw or None, item_id))
-    elif kind == "web":
-        meta, raw = web_source.collect_web(url)
-        if raw:
-            meta["transcript"] = raw
-        card = analyze.build_card(meta, note, item_id, conn, kind="cognition")
-        status = "carded" if meta.get("title") else "pending_meta"
-        c.execute("UPDATE repos SET meta=?, card=?, status=?, raw=?, kind='cognition' WHERE id=?",
-                  (json.dumps(meta, ensure_ascii=False),
-                   json.dumps(card, ensure_ascii=False), status, raw or None, item_id))
-    else:
-        meta = fetch_github_meta(path) if kind == "github" else {"note": "gitlab meta 暂未拉取"}
-        card = analyze.build_card(meta, note, item_id, conn)
-        status = "carded" if "error" not in meta else "pending_meta"
-        c.execute("UPDATE repos SET meta=?, card=?, status=?, kind='production' WHERE id=?",
-                  (json.dumps(meta, ensure_ascii=False),
-                   json.dumps(card, ensure_ascii=False), status, item_id))
-    sync_axes(conn, item_id, card, note, meta)   # worker 与 regenerate 共用同一落点
-    conn.commit()
-    conn.close()
+    try:
+        if kind == "douyin":
+            meta = None
+            raw = None
+            try:
+                meta, raw = douyin_source.collect_douyin(
+                    url, transcribe_fn=transcribe_fn or _transcribe_engine,
+                    media_dir=config.MEDIA_DIR or None)
+                if raw:
+                    meta["transcript"] = raw
+            except Exception as e:
+                # 抖音解析被反爬签名拦截（或链接失效）：链接仍要存住——做成『待补充』存根卡，
+                # 让用户在收藏箱里补全文案，而不是整个失败丢链接。错误信息如实保留。
+                vid = douyin_source._extract_video_id(url)
+                meta = {
+                    "name": "抖音 · 待补充",
+                    "title": "抖音视频（待补充）",
+                    "description": (note or
+                                    "抖音视频元数据被反爬签名拦截，纯抓取无法获取标题/作者/封面；"
+                                    "可在备注中补充视频文案，或于 App 内打开后手动补全"),
+                    "author": "", "cover": "", "play_url": "",
+                    "video_id": vid, "platform": "douyin",
+                    "parse_status": "blocked_antibot",
+                    "error": str(e)[:300],
+                    "url": url,
+                }
+            _enrich_transcript_md(meta)   # 生成结构化逐字稿笔记（后台预算充足）
+            card = analyze.build_card(meta, note, item_id, conn, kind="cognition")
+            # 存根卡：标注待补充，前端据此提示用户补全
+            if meta.get("parse_status") == "blocked_antibot":
+                card["_stub"] = True
+                card["stub_reason"] = meta.get("error")
+            status = "carded" if meta.get("title") else "pending_meta"
+            c.execute("UPDATE repos SET meta=?, card=?, status=?, raw=?, kind='cognition' WHERE id=?",
+                      (json.dumps(meta, ensure_ascii=False),
+                       json.dumps(card, ensure_ascii=False), status, raw or None, item_id))
+        elif kind == "web":
+            meta, raw = web_source.collect_web(url)
+            if raw:
+                meta["transcript"] = raw
+            _enrich_transcript_md(meta)   # 生成结构化逐字稿笔记（后台预算充足）
+            card = analyze.build_card(meta, note, item_id, conn, kind="cognition")
+            status = "carded" if meta.get("title") else "pending_meta"
+            c.execute("UPDATE repos SET meta=?, card=?, status=?, raw=?, kind='cognition' WHERE id=?",
+                      (json.dumps(meta, ensure_ascii=False),
+                       json.dumps(card, ensure_ascii=False), status, raw or None, item_id))
+        else:
+            meta = fetch_github_meta(path) if kind == "github" else {"note": "gitlab meta 暂未拉取"}
+            card = analyze.build_card(meta, note, item_id, conn)
+            status = "carded" if "error" not in meta else "pending_meta"
+            c.execute("UPDATE repos SET meta=?, card=?, status=?, kind='production' WHERE id=?",
+                      (json.dumps(meta, ensure_ascii=False),
+                       json.dumps(card, ensure_ascii=False), status, item_id))
+        sync_axes(conn, item_id, card, note, meta)   # worker 与 regenerate 共用同一落点
+        conn.commit()
+    except Exception as e:
+        # 健壮性：任一环节抛异常都不再让条目「永久卡在 queued」——
+        # 改为记录 status='error' 与错误信息，前端能直接看到失败原因。
+        err = (str(e) or e.__class__.__name__).strip()[:300]
+        try:
+            c.execute(
+                "UPDATE repos SET status=?, error=?, meta=?, card=? WHERE id=?",
+                ("error", err,
+                 json.dumps({"url": url, "error": err}, ensure_ascii=False), None, item_id))
+            conn.commit()
+        except Exception:
+            pass
+    finally:
+        conn.close()
 
 
 def collect_payload(url, note, source="manual"):
@@ -1415,6 +1473,24 @@ class Handler(BaseHTTPRequestHandler):
             return None, 400
         return (obj if isinstance(obj, dict) else {}), 200
 
+    def _drain_body(self):
+        """读掉并丢弃请求体（不解析）。
+
+        为什么必须做：这些写接口（/api/reindex、/api/updates/check、/api/updates/seen）
+        不关心 body，但浏览器 fetch 仍会发 `body:"{}"`。若不消费，残留字节会留在 keep-alive
+        连接里，和下一个请求行黏成 `{}GET /api/updates` → 服务端报
+        "Unsupported method ('{}GET')" 501，把紧随其后的 GET 请求打挂。
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        if length > 0:
+            try:
+                self.rfile.read(length)
+            except Exception:
+                pass
+
     def _token_ok(self):
         """可选口令校验。未配置 TOKEN 时恒通过（本机自用默认）。"""
         if not config.TOKEN:
@@ -1558,11 +1634,11 @@ class Handler(BaseHTTPRequestHandler):
         if q:
             like = "%" + q + "%"
             c.execute(
-                """SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw FROM repos
+                """SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw,error FROM repos
                    WHERE url LIKE ? OR note LIKE ? OR meta LIKE ? OR card LIKE ?
                    ORDER BY id DESC LIMIT 50""", (like, like, like, like))
         else:
-            c.execute("SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw FROM repos "
+            c.execute("SELECT id,url,note,status,meta,card,created_at,feedback,kind,raw,error FROM repos "
                       "ORDER BY id DESC LIMIT 50")
         rows = c.fetchall()
         conn.close()
@@ -1575,7 +1651,8 @@ class Handler(BaseHTTPRequestHandler):
                 meta, card = None, None
             items.append({"id": r[0], "url": r[1], "note": r[2], "status": r[3],
                           "meta": meta, "card": card, "created_at": r[6],
-                          "feedback": r[7], "kind": r[8] or "production", "raw": r[9]})
+                          "feedback": r[7], "kind": r[8] or "production",
+                          "raw": r[9], "error": r[10]})
         return {"items": items, "q": q}
 
     # ---------- POST ----------
@@ -1606,6 +1683,7 @@ class Handler(BaseHTTPRequestHandler):
             if guard:
                 self._send(*guard)
                 return
+            self._drain_body()
             n = reindex_axes()
             self._send(200, {"ok": True, "rebuild": n})
             return
@@ -1631,6 +1709,7 @@ class Handler(BaseHTTPRequestHandler):
             if guard:
                 self._send(*guard)
                 return
+            self._drain_body()
             res = check_repo_updates(force=True)
             self._send(200, {"ok": True, "checked": res["checked"],
                              "new_events": len(res["events"])})
@@ -1640,6 +1719,7 @@ class Handler(BaseHTTPRequestHandler):
             if guard:
                 self._send(*guard)
                 return
+            self._drain_body()
             n = mark_updates_seen()
             self._send(200, {"ok": True, "seen": n})
             return
