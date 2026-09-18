@@ -283,7 +283,7 @@ function bindJump(){
     el.addEventListener('click', function(){
       var layer = el.getAttribute('data-jump');
       var v = el.getAttribute('data-v');
-      if(layer && v) location.href = 'cards.html?'+layer+'='+encodeURIComponent(v);
+      if(layer && v) goPage('cards.html?'+layer+'='+encodeURIComponent(v));
     });
   });
 }

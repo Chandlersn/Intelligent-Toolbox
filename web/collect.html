@@ -101,7 +101,7 @@ function loadItems(){
     box.querySelectorAll('.item').forEach(function(el){
       el.addEventListener('click',function(){
         var id=el.getAttribute('data-id');
-        location.href='cards.html?id='+encodeURIComponent(id);
+        goPage('cards.html?id='+encodeURIComponent(id));
       });
     });
   }).catch(function(){/* ignore */});

@@ -9,7 +9,7 @@
   html,body{margin:0;padding:0;height:100%;overflow:hidden}
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6;
     display:flex;flex-direction:column}
-  /* App 壳主窗：顶部常驻工具栏 + 内容 iframe */
+  /* App 壳主窗：顶部常驻工具栏 + 多个常驻 iframe（切换只显示/隐藏，不重载） */
   #app-shell{display:flex;flex-direction:column;height:100%}
   .app-nav{flex:none;display:flex;align-items:center;gap:14px;
     padding:10px 16px;border-bottom:1px solid var(--line);
@@ -21,8 +21,9 @@
     font-size:13px;font-family:inherit;padding:6px 13px;border-radius:999px;cursor:pointer;white-space:nowrap}
   .app-tab:hover{color:var(--ink)}
   .app-tab.active{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
-  .app-main{flex:1;position:relative;min-height:0}
-  #pane{position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--bg)}
+  #panes{flex:1;position:relative;min-height:0;overflow:hidden}
+  .pane-frame{position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--bg)}
+  .pane-frame[hidden]{display:none}
 </style>
 </head>
 <body data-nav="">
@@ -31,9 +32,7 @@
     <span class="app-logo">收藏箱</span>
     <div class="app-tabs" id="tabs"></div>
   </nav>
-  <main class="app-main">
-    <iframe id="pane" title="内容"></iframe>
-  </main>
+  <main class="app-main" id="panes"></main>
 </div>
 <script>
 // 外观应用：与 nav.js::applyAppearance 保持同一套规则，让壳工具栏配色跟随系统/设置
@@ -58,6 +57,7 @@
   }
 })();
 
+// 常驻标签页：每个 tab 一个 iframe，切换只改显示/隐藏，切回时保留滚动与状态、不再重载
 (function () {
   var PAGES = [
     { key: "collect", href: "/collect.html",  label: "收藏" },
@@ -67,30 +67,73 @@
     { key: "profile", href: "/profile.html",  label: "画像" },
     { key: "settings", href: "/settings.html", label: "设置" }
   ];
-  var pane = document.getElementById("pane");
+  var panes = document.getElementById("panes");
   var tabs = document.getElementById("tabs");
-  var remembered = null;
-  try { remembered = sessionStorage.getItem("shell_tab"); } catch (e) {}
-  var start = PAGES.some(function (p) { return p.key === remembered; }) ? remembered : "cards";
-  var def = null;
+  var frames = {};
+  var activeKey = null;
+
+  function keyOfHref(href) {
+    var path = String(href || "").split("?")[0];
+    for (var i = 0; i < PAGES.length; i++) {
+      var p = PAGES[i];
+      if (path.indexOf(p.key + ".html") > -1) return p.key;
+    }
+    return null;
+  }
+
+  function ensureFrame(key) {
+    if (frames[key]) return frames[key];
+    var p = null, i;
+    for (i = 0; i < PAGES.length; i++) if (PAGES[i].key === key) { p = PAGES[i]; break; }
+    var ifr = document.createElement("iframe");
+    ifr.className = "pane-frame";
+    ifr.title = p ? p.label : key;
+    frames[key] = ifr;
+    panes.appendChild(ifr);
+    if (p) ifr.setAttribute("src", p.href);   // 首次展示即加载；之后常驻不重载
+    return ifr;
+  }
+
+  function showTab(key) {
+    activeKey = key;
+    try { sessionStorage.setItem("shell_tab", key); } catch (e) {}
+    var btns = tabs.querySelectorAll(".app-tab");
+    for (var i = 0; i < btns.length; i++) btns[i].classList.toggle("active", btns[i].getAttribute("data-key") === key);
+    for (var k in frames) {
+      if (k === key) frames[k].removeAttribute("hidden");
+      else frames[k].setAttribute("hidden", "");
+    }
+  }
+
+  // 内页跨页跳转路由：收到 goPage() 抛来的目标地址后，切到对应 tab 并按需导航其 iframe
+  window.__shellNav = function (href) {
+    var key = keyOfHref(href);
+    if (!key) {
+      var f = frames[activeKey];
+      if (f && href != null) f.setAttribute("src", href);
+      return;
+    }
+    ensureFrame(key);
+    if (String(href) !== frames[key].getAttribute("src")) frames[key].setAttribute("src", href);
+    showTab(key);
+  };
 
   PAGES.forEach(function (p) {
     var b = document.createElement("button");
     b.type = "button";
-    b.className = "app-tab" + (p.key === start ? " active" : "");
+    b.className = "app-tab";
+    b.setAttribute("data-key", p.key);
     b.textContent = p.label;
-    b.onclick = function () {
-      try { sessionStorage.setItem("shell_tab", p.key); } catch (e) {}
-      pane.src = p.href;
-      var as = tabs.querySelectorAll(".app-tab");
-      for (var i = 0; i < as.length; i++) as[i].classList.remove("active");
-      b.classList.add("active");
-    };
+    b.onclick = function () { ensureFrame(p.key); showTab(p.key); };
     tabs.appendChild(b);
-    if (p.key === start) def = p;
   });
 
-  pane.src = def ? def.href : "/cards.html";
+  var remembered = null;
+  try { remembered = sessionStorage.getItem("shell_tab"); } catch (e) {}
+  var start = "cards";
+  for (var i = 0; i < PAGES.length; i++) if (PAGES[i].key === remembered) { start = remembered; break; }
+  ensureFrame(start);
+  showTab(start);
 })();
 </script>
 </body>

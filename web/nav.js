@@ -50,6 +50,17 @@
   applyAppearance();
   window.applyAppearance = applyAppearance;
 
+  // 跨页跳转网关：被嵌在壳 iframe 里时交由父窗切 tab（保持各页常驻），独立打开时整页跳。
+  window.goPage = function (href) {
+    try {
+      if (window.self !== window.top && window.parent && window.parent.__shellNav) {
+        window.parent.__shellNav(href);
+        return;
+      }
+    } catch (e) {}
+    location.href = href;
+  };
+
   var PAGES = [
     { key: "collect",   href: "/",                label: "收藏",   short: "收" },
     { key: "cards",     href: "/cards.html",      label: "卡片",   short: "卡" },
@@ -165,7 +176,7 @@
       '<a class="upd-go" id="upd-check">检查更新</a>' +
       '<a class="upd-go" id="upd-ok">知道了</a>';
     document.body.insertBefore(b, document.body.firstChild);
-    el("upd-go").onclick = function () { location.href = "/cards.html"; };
+    el("upd-go").onclick = function () { goPage("/cards.html"); };
     el("upd-check").onclick = function () { checkNow(); };
     el("upd-ok").onclick = function () { markSeen(); };
     window.dispatchEvent(new CustomEvent("repo:updates", { detail: { events: data.events, byRepo: byRepo } }));

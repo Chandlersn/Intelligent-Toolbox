@@ -329,7 +329,7 @@ function renderGroups(){
       '<div class="bar" style="flex-basis:100%"><i style="width:'+(n/max*100)+'%;background:'+colorOf(k)+'"></i></div>';
     el.onclick = (e)=>{
       if(e.target && e.target.classList.contains('goto')){
-        location.href = 'cards.html?' + curAxis + '=' + encodeURIComponent(k);
+        goPage('cards.html?' + curAxis + '=' + encodeURIComponent(k));
         return;
       }
       toggleDomain(k);
@@ -518,7 +518,7 @@ function select(id){
   applyHighlight();
 }
 // 点击节点 → 跳到它在卡片页对应的那张卡
-function openCard(n){ location.href = "cards.html?focus=" + n.id; }
+function openCard(n){ goPage("cards.html?focus=" + n.id); }
 function toggleDomain(name){
   // 点击领域：高亮该领域所有节点
   const any = nodes.some(n=>n.domain===name && selId!=="D:"+name);
