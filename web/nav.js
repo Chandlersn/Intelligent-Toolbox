@@ -29,7 +29,6 @@
     { key: "cards",     href: "/cards.html",      label: "卡片",   short: "卡" },
     { key: "map",       href: "/map.html",        label: "图谱",   short: "图" },
     { key: "recommend", href: "/recommend.html",  label: "推荐",   short: "荐" },
-    { key: "share",     href: "/share.html",      label: "分享",   short: "享" },
     { key: "profile",   href: "/profile.html",    label: "画像",   short: "像" }
   ];
 
