@@ -135,8 +135,7 @@
     <div class="msg" id="llmMsg"></div>
 
     <div class="split"></div>
-    <div class="sec-h" style="font-size:13px">当前能力状态</div>
-    <div id="infoRows"><div class="msg">读取中…</div></div>
+    <div class="row-info"><span class="k">数据库</span><span class="v" id="dbInfo">读取中…</span></div>
   </section>
 
 </div>
@@ -198,38 +197,13 @@ document.getElementById('resetAppearance').addEventListener('click', function(){
 var llmMsg=document.getElementById('llmMsg');
 function lnote(t,cls){ llmMsg.className='msg '+(cls||''); llmMsg.textContent=t; }
 
-function pill(on,label){ return '<span class="pill-st '+(on?'on':'off')+'">'+esc(label)+'</span>'; }
-function infoRow(k,v,off){ return '<div class="row-info"><span class="k">'+esc(k)+'</span>'+
-  (String(v).indexOf('pill-st')>=0 ? '<span class="v">'+v+'</span>' : '<span class="v'+(off?' off':'')+'">'+v+'</span>')+'</div>'; }
 function fmtSize(n){ n=n||0; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
-
-var backendName={builtin_remote:'内置远程模型',lantern:'灯笼模块',off:'未启用'};
-function renderStatus(d){
-  var llm=d.llm||{}, t=d.transcribe||{}, g=d.github||{}, db=d.db||{};
-  var rows=
-    infoRow('模型 / LLM', pill(!!llm.available, llm.available?'可用':'未启用'))+
-    infoRow('当前后端', esc(backendName[llm.backend]||'未启用'), !llm.available);
-  if(llm.backend==='builtin_remote'){
-    rows+= infoRow('接口地址', esc(llm.base_url||'—'), !llm.base_url)+
-           infoRow('模型名', esc(llm.model||'—'), !llm.model)+
-           infoRow('API Key', pill(!!llm.has_key, llm.has_key?'已配置':'未配置'));
-  } else if(llm.backend==='lantern'){
-    rows+= infoRow('复用模块', esc(llm.root||'—'));
-  }
-  rows+=
-    infoRow('GitHub Token', pill(!!g.token, g.token?'已配置':'未配置'))+
-    infoRow('转写就绪', pill(!!t.ready, t.ready?'就绪':'缺依赖'), !t.ready)+
-    infoRow('转写模型', (t.whisper_model||'—'))+
-    infoRow('ffmpeg', (t.ffmpeg_bin||'—'))+
-    infoRow('数据库', (db.path||'—'))+
-    (db.size!=null ? infoRow('DB 大小', fmtSize(db.size)) : '');
-  document.getElementById('infoRows').innerHTML=rows;
-}
-function refreshStatus(){
+function loadDbSize(){
   fetch('/api/doctor').then(function(r){return r.json()}).then(function(d){
-    renderStatus(d);
+    var db=d.db||{};
+    document.getElementById('dbInfo').textContent = db.size!=null ? fmtSize(db.size) : (db.path||'—');
   }).catch(function(){
-    document.getElementById('infoRows').innerHTML='<div class="msg err">读不到服务状态，确认服务在运行。</div>';
+    document.getElementById('dbInfo').textContent='—';
   });
 }
 
@@ -263,12 +237,12 @@ document.getElementById('saveLLM').addEventListener('click', function(){
         var v=s.llm||{}; llmKey.value=v.api_key||'';
         llmEnable.checked=!!v.enable; llmBase.value=v.base_url||''; llmModel.value=v.model||'';
       }).catch(function(){});
-      refreshStatus();
+      loadDbSize();
     }else{ lnote((d.error||'保存失败'),'err'); }
   }).catch(function(){ lnote('保存失败：连不上服务。','err'); });
 });
 
-refreshStatus();
+loadDbSize();
 </script>
 </body>
 </html>
