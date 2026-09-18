@@ -61,11 +61,12 @@ class TestHttp(Base):
         self.assertEqual(code, 200)
         self.assertTrue(body["ok"])
 
-    def test_root_serves_collect_page(self):
+    def test_root_serves_app_shell(self):
+        """根路径返回 App 壳（shell.html），带壳标识 id="app-shell"。"""
         code, data, hdrs = self.req("GET", "/")
         self.assertEqual(code, 200)
         self.assertIn("text/html", hdrs["Content-Type"])
-        self.assertIn("收藏箱", data.decode("utf-8"))
+        self.assertIn("app-shell", data.decode("utf-8"))
 
     def test_static_css_js_are_served(self):
         code, _, hdrs = self.req("GET", "/theme.css")

@@ -1792,7 +1792,8 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         if path in ("/", "/index.html"):
-            self._serve_file(os.path.join(WEB_DIR, "collect.html"), "text/html")
+            # App 壳主窗（内含 iframe 加载各页）；收藏列表页仍在 /collect.html
+            self._serve_file(os.path.join(WEB_DIR, "shell.html"), "text/html")
             return
         if path == "/collect":
             # 分享深链：从系统分享 / 二维码 / 短信打开即收藏（移动友好结果页）

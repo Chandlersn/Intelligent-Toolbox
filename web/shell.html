@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>收藏箱</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6;
+    display:flex;flex-direction:column}
+  /* App 壳主窗：顶部常驻工具栏 + 内容 iframe */
+  #app-shell{display:flex;flex-direction:column;height:100%}
+  .app-nav{flex:none;display:flex;align-items:center;gap:14px;
+    padding:10px 16px;border-bottom:1px solid var(--line);
+    background:var(--surface)}
+  .app-logo{font-weight:600;font-size:15px;color:var(--accent);letter-spacing:.3px;white-space:nowrap}
+  .app-tabs{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
+  .app-tabs::-webkit-scrollbar{display:none}
+  .app-tab{border:1px solid transparent;background:transparent;color:var(--muted);
+    font-size:13px;font-family:inherit;padding:6px 13px;border-radius:999px;cursor:pointer;white-space:nowrap}
+  .app-tab:hover{color:var(--ink)}
+  .app-tab.active{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
+  .app-main{flex:1;position:relative;min-height:0}
+  #pane{position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--bg)}
+</style>
+</head>
+<body data-nav="">
+<div id="app-shell">
+  <nav class="app-nav">
+    <span class="app-logo">收藏箱</span>
+    <div class="app-tabs" id="tabs"></div>
+  </nav>
+  <main class="app-main">
+    <iframe id="pane" title="内容"></iframe>
+  </main>
+</div>
+<script>
+// 外观应用：与 nav.js::applyAppearance 保持同一套规则，让壳工具栏配色跟随系统/设置
+(function () {
+  var a = {};
+  try { a = JSON.parse(localStorage.getItem("appearance") || "{}") || {}; } catch (e) {}
+  function apply() {
+    var th = a.theme || "system";
+    var dark = th === "dark" ||
+      (th === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    var doc = document.documentElement;
+    doc.setAttribute("data-theme", dark ? "dark" : "light");
+    if (a.accent) doc.setAttribute("data-accent", a.accent); else doc.removeAttribute("data-accent");
+    if (a.font) doc.setAttribute("data-font", a.font); else doc.removeAttribute("data-font");
+    doc.style.zoom = ({ small: 0.92, large: 1.08 })[a.size] || 1;
+  }
+  apply();
+  window.addEventListener("app:appearance", apply);   // 内页改主题后父窗跟随
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: dark)")
+      .addEventListener("change", function () { apply(); });
+  }
+})();
+
+(function () {
+  var PAGES = [
+    { key: "collect", href: "/collect.html",  label: "收藏" },
+    { key: "cards",   href: "/cards.html",    label: "卡片" },
+    { key: "map",     href: "/map.html",      label: "图谱" },
+    { key: "recommend", href: "/recommend.html", label: "推荐" },
+    { key: "profile", href: "/profile.html",  label: "画像" },
+    { key: "settings", href: "/settings.html", label: "设置" }
+  ];
+  var pane = document.getElementById("pane");
+  var tabs = document.getElementById("tabs");
+  var remembered = null;
+  try { remembered = sessionStorage.getItem("shell_tab"); } catch (e) {}
+  var start = PAGES.some(function (p) { return p.key === remembered; }) ? remembered : "cards";
+  var def = null;
+
+  PAGES.forEach(function (p) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "app-tab" + (p.key === start ? " active" : "");
+    b.textContent = p.label;
+    b.onclick = function () {
+      try { sessionStorage.setItem("shell_tab", p.key); } catch (e) {}
+      pane.src = p.href;
+      var as = tabs.querySelectorAll(".app-tab");
+      for (var i = 0; i < as.length; i++) as[i].classList.remove("active");
+      b.classList.add("active");
+    };
+    tabs.appendChild(b);
+    if (p.key === start) def = p;
+  });
+
+  pane.src = def ? def.href : "/cards.html";
+})();
+</script>
+</body>
+</html>

@@ -42,6 +42,10 @@
     if (a.font) doc.setAttribute("data-font", a.font); else doc.removeAttribute("data-font");
     var size = ({ small: 0.92, large: 1.08 })[a.size] || 1;
     doc.style.zoom = size;
+    // 被内嵌在壳 iframe 里时，把外观变更通知给父窗，让壳工具栏配色即时跟随
+    try {
+      if (window.self !== window.top) window.parent.dispatchEvent(new Event("app:appearance"));
+    } catch (e) {}
   }
   applyAppearance();
   window.applyAppearance = applyAppearance;
@@ -111,7 +115,11 @@
     document.head.appendChild(sm);
   }
 
-  if (document.readyState === "loading") {
+  // 被嵌在壳 iframe 里时不建底部导航/留白（外观已在上方 applyAppearance 应用过）——
+  // 但独立打开页面（非 iframe）时按原样建导航。
+  if (window.self !== window.top) {
+    /* 壳内嵌：只保留外观，底部标签栏由壳工具栏承担 */
+  } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", build);
   } else {
     build();
