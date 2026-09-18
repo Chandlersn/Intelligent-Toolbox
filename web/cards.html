@@ -395,6 +395,7 @@ var LAYERS = ['domain', 'tech', 'motive', 'use'];
 var SEL = { domain: [], tech: [], motive: [], use: [], kind: [] }; // 每层选中的取值列表
 
 // 从 URL 预读筛选条件（如 profile/map 页钻取过来：cards.html?domain=AI·LLM）
+var _focusId='';  // ?focus=<repo_id>：图谱/其它页跳来后定位到某张卡片，只消费一次
 (function readUrlSel(){
   var qs = new URLSearchParams(location.search);
   LAYERS.forEach(function(layer){
@@ -403,6 +404,7 @@ var SEL = { domain: [], tech: [], motive: [], use: [], kind: [] }; // 每层选�
   });
   var q = qs.get('q');
   if(q) setTimeout(function(){ var el=document.getElementById('f-q'); if(el) el.value=q; }, 0);
+  _focusId = qs.get('focus') || '';
 })();
 
 function loadFacets(){
@@ -492,6 +494,7 @@ function load(){
     if(sig===_lastSig) return;
     _lastSig=sig;
     render(items);
+    maybeFocus();
   }).catch(function(){ w.innerHTML='<div class="empty">加载失败，确认服务在运行。</div>'; });
 }
 
@@ -625,6 +628,13 @@ function focusCard(id){
   document.querySelectorAll('.card.focus').forEach(function(c){ c.classList.remove('focus'); });
   el.classList.add('focus');
   el.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+// 从其它页跳来（?focus=<id>）定位到指定卡片：只消费一次，避免随后的 8s 轮询反复滚动
+function maybeFocus(){
+  if(!_focusId) return;
+  var id = _focusId; _focusId = '';
+  focusCard(id);
 }
 
 // 使用反馈：用过 / 弃了 / 还想用（再点一次同一个值 = 取消）
