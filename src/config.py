@@ -74,6 +74,12 @@ TRANSCRIPT_MD_TIMEOUT = _env_int("REPO_TRANSCRIPT_MD_TIMEOUT", 60)
 # 保证「长内容也不丢篇末」，绝不从中间硬切。
 TRANSCRIPT_MD_SINGLE_MAX = _env_int("REPO_TRANSCRIPT_MD_SINGLE_MAX", 30000)
 
+# ---------- 后台采集并发 ----------
+# 同时最多多少个 worker 在跑。批量收藏/文本投递时多个 worker 会并发：
+# LLM 出卡（限流/费用）、whisper 转写（抢 CPU 内存）、SQLite 并发写。
+# 超出的线程在信号量上排队，而不是无限开线程。个人工具用信号量最轻，无常驻队列。
+REPO_MAX_BOOST_WORKERS = _env_int("REPO_MAX_BOOST_WORKERS", 3)
+
 # ---------- 认知端（抖音等）转录 ----------
 # 下载的视频/音频落盘目录。默认放在项目根 media/（不进版本库，已被 .gitignore 习惯排除）。
 MEDIA_DIR = _env("REPO_MEDIA_DIR", os.path.join(ROOT, "media"))

@@ -202,7 +202,23 @@ def domain_adjacency(conn):
     return out
 
 
-def get_graph(sample_warn=True):
+# ---------- 热点接口 TTL 缓存 ----------
+# 之前计划用 SQLite 内建 PRAGMA data_version 作失效信号，但实测在本环境
+# （内置 sqlite3）对 DML(INSERT/UPDATE/DELETE) commit 后并不递增，不可依赖。
+# 退而用「库路径 key + 短 TTL」：切库即失效（保证测试/换库隔离），同库在
+# TTL 内复用，写入后至多 stale ttl 秒。前端 8s 轮询 + 手动刷新下无感。
+def _cached(slot, build_fn, ttl):
+    """进程内 TTL 缓存。key 含库路径，切库重建；同库 TTL 窗口内复用。"""
+    now = time.time()
+    if (slot["key"] == config.DB and slot["data"] is not None
+            and now - slot["ts"] < ttl):
+        return slot["data"]
+    data = build_fn()
+    slot.update(key=config.DB, ts=now, data=data)
+    return data
+
+
+def _build_graph_uncached(sample_warn=True):
     """聚合多轴数据 → 图谱结构。优先读 repo_axis，轴缺失时回退 card。"""
     conn = db.connect()
     c = conn.cursor()
@@ -292,6 +308,19 @@ def get_graph(sample_warn=True):
         "sample": total,
         "total": total,
     }
+
+
+# 图谱/画像缓存 TTL：取 < 前端 8s 轮询，写入后至多 stale 这个窗口。
+# 调用方对返回值只读，勿原地修改（注释约定）。
+GRAPH_TTL = 3
+_PROFILE_TTL = 3
+_GRAPH_CACHE = {"key": None, "ts": 0.0, "data": None}
+_PROFILE_CACHE = {"key": None, "ts": 0.0, "data": None}
+
+
+def get_graph(sample_warn=True):
+    """图谱（TTL 缓存包装）。同库短窗内复用结果，减少重复全量计算。"""
+    return _cached(_GRAPH_CACHE, lambda: _build_graph_uncached(sample_warn), GRAPH_TTL)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -502,7 +531,7 @@ def get_recommendations():
 # ═══════════════════════════════════════════════════════════════════
 #  行为画像（行为层，不并入知识库）
 # ═══════════════════════════════════════════════════════════════════
-def get_profile():
+def _build_profile_uncached():
     """聚合收藏行为 → 行为层画像。优先读 repo_axis（多轴+置信度），回退 card。"""
     conn = db.connect()
     c = conn.cursor()
@@ -621,6 +650,11 @@ def get_profile():
         "gaps": gaps,
         "span": span,
     }
+
+
+def get_profile():
+    """行为画像（TTL 缓存包装）。同库短窗内复用，避免每次全量聚合。"""
+    return _cached(_PROFILE_CACHE, _build_profile_uncached, _PROFILE_TTL)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -942,6 +976,15 @@ def _enrich_transcript_md(meta):
     return meta
 
 
+# 后台采集并发控制：有界信号量，保证同时最多 config.REPO_MAX_BOOST_WORKERS
+# 个 worker 在跑。批量收藏时 LLM 出卡限流/费用、whisper 转写抢 CPU 内存、
+# SQLite 并发写，无界并发会互相挤兑。信号量随进程生命周期；进程退出时
+# 排队线程被 daemon 丢弃，无需优雅回收。
+# acquire 放 worker 体内（而非 collect_payload），才能让超出的线程真正排队——
+# 前台 collect 依旧立即返回 queued。
+_BOOST_SEM = threading.BoundedSemaphore(config.REPO_MAX_BOOST_WORKERS)
+
+
 def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
     """后台异步：拉取元数据 → 生成多维分析卡片 → 落库 → 同步轴表。
 
@@ -953,8 +996,14 @@ def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
     transcribe_fn：可注入的转写引擎（测试用假引擎，也便于以后换云端 ASR）。
     不传则走默认本地 faster-whisper。
     """
-    conn = db.connect()
-    c = conn.cursor()
+    _BOOST_SEM.acquire()
+    try:
+        conn = db.connect()
+        c = conn.cursor()
+    except Exception:
+        # 连接失败也释放信号量，避免泄漏让后续收藏永久排队
+        _BOOST_SEM.release()
+        raise
     try:
         if kind == "douyin":
             meta = None
@@ -1024,6 +1073,7 @@ def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
             pass
     finally:
         conn.close()
+        _BOOST_SEM.release()
 
 
 def collect_payload(url, note, source="manual"):

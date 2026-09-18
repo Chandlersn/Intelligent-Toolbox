@@ -437,6 +437,27 @@ class TestWorkerDouyin(Base):
         node = next(n for n in g["nodes"] if n["id"] == rid)
         self.assertEqual(node["kind"], "cognition")
 
+    def test_semaphore_released_after_worker(self):
+        # 后台并发控制：真实 worker 跑完后信号量计数必须复原（防 acquire 泄漏，
+        # 否则后续收藏会永久排队）。
+        orig = server.douyin_source.collect_douyin
+        server.douyin_source.collect_douyin = self._fake_collect
+        v0 = server._BOOST_SEM._value
+        try:
+            conn = db.connect()
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO repos (url,note,status,created_at,source,kind) "
+                "VALUES (?,?,?,?,?,?)",
+                ("https://v.douyin.com/sem/", "", "queued", server.now(), "manual", "cognition"))
+            rid = c.lastrowid
+            conn.commit()
+            conn.close()
+            server.worker(rid, "https://v.douyin.com/sem/", "", "douyin", None, "manual")
+            self.assertEqual(server._BOOST_SEM._value, v0)
+        finally:
+            server.douyin_source.collect_douyin = orig
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  后端 kind 筛选
@@ -547,6 +568,54 @@ class TestWorkerWeb(Base):
         self.assertEqual(card["domain"], "Web 框架")
         self.assertEqual(row[4], "carded")
         self.assertIsNotNone(ax)                      # 轴表已同步
+
+
+class TestRelatedContract(Base):
+    """方案 B · 关联计算去重：_related_for 规则回退应保持既有关联契约。"""
+
+    def test_related_fallback_links_same_domain(self):
+        self.add_repo("https://github.com/a/alpha",
+                      card={"domain": "AI·LLM", "tags": ["llm", "工具"]})
+        self.add_repo("https://github.com/b/beta",
+                      card={"domain": "AI·LLM", "tags": ["llm"]})
+        self.add_repo("https://github.com/c/gamma",
+                      card={"domain": "数据库", "tags": ["sql"]})
+        new_meta = {"name": "delta", "description": "llm 推理库"}
+        conn = db.connect()
+        try:
+            nodes = analyze._related_for(new_meta, "想试试", 0, conn, domain="AI·LLM")
+        finally:
+            conn.close()
+        self.assertTrue(nodes)
+        reasons = {n["url"]: n["reason"] for n in nodes}
+        self.assertIn("https://github.com/a/alpha", reasons)
+        self.assertEqual(reasons["https://github.com/a/alpha"], "同属「AI·LLM」")
+        self.assertIn("https://github.com/b/beta", reasons)
+        # 不同领域、不共享标签的不相关项不该混进来
+        self.assertNotIn("https://github.com/c/gamma", reasons)
+
+
+class TestVersionedCache(Base):
+    """方案 C · 热点接口 TTL 缓存：同库复用（同一对象），切库即失效（隔离正确）。"""
+
+    def test_graph_cache_reuses_same_object_and_invalidates_on_db_switch(self):
+        g1 = server.get_graph()
+        self.assertIs(server.get_graph(), g1)          # TTL 窗内同库 → 命中同对象
+        # 切到另一个临时库：key 含库路径 → 立即失效重建（保证测试/换库隔离）
+        other = os.path.join(self.tmp, "other.db")
+        config.DB = other
+        server.init_db()
+        g2 = server.get_graph()
+        self.assertIsNot(g2, g1)
+
+    def test_profile_cache_reuses_same_object_and_invalidates_on_db_switch(self):
+        p1 = server.get_profile()
+        self.assertIs(server.get_profile(), p1)
+        other = os.path.join(self.tmp, "other2.db")
+        config.DB = other
+        server.init_db()
+        p2 = server.get_profile()
+        self.assertIsNot(p2, p1)
 
 
 if __name__ == "__main__":

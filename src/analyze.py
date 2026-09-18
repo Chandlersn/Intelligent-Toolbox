@@ -523,6 +523,28 @@ def detect_recommendation(meta):
     return score
 
 
+def _candidate_rows(conn, item_id):
+    """已有收藏候选快照（排除自身），meta/card 各 json.loads 一次，容忍损坏。
+
+    供 detect_related / _related_for 复用，避免两条路径各自重复全表读 +
+    逐行 JSON 解析。不做跨调用的全局缓存：worker 并发收藏会串数据并引入竞争。
+    """
+    c = conn.cursor()
+    c.execute("SELECT id,url,meta,card FROM repos WHERE id<>? AND meta IS NOT NULL", (item_id,))
+    out = []
+    for rid, url, rmeta_s, rcard_s in c.fetchall():
+        try:
+            rmeta = json.loads(rmeta_s) if rmeta_s else {}
+        except Exception:
+            rmeta = {}
+        try:
+            rcard = json.loads(rcard_s) if rcard_s else None
+        except Exception:
+            rcard = None
+        out.append({"id": rid, "url": url, "meta": rmeta, "card": rcard})
+    return out
+
+
 def detect_related(meta, note, item_id, conn, domain=None):
     """弱协同关联：同领域或共享标签的已有收藏（排除自身）。
 
@@ -533,25 +555,15 @@ def detect_related(meta, note, item_id, conn, domain=None):
     if domain is None:
         domain = detect_domain(meta)
     my_tags = set(t.lower() for t in detect_tags(meta))
-    c = conn.cursor()
-    c.execute("SELECT id,url,meta,card FROM repos WHERE id<>? AND meta IS NOT NULL", (item_id,))
-    rows = c.fetchall()
     related = []
-    for rid, url, rmeta_s, rcard_s in rows:
-        try:
-            rmeta = json.loads(rmeta_s) if rmeta_s else {}
-        except Exception:
-            rmeta = {}
+    for it in _candidate_rows(conn, item_id):
+        rid, url, rmeta, rcard = it["id"], it["url"], it["meta"], it["card"]
         # 优先用对方已算好的卡片 domain，否则即时算
         rdomain = "未分类"
         rtags = []
-        if rcard_s:
-            try:
-                rc = json.loads(rcard_s)
-                rdomain = rc.get("domain", "未分类")
-                rtags = [t.lower() for t in rc.get("tags", [])]
-            except Exception:
-                pass
+        if rcard:
+            rdomain = rcard.get("domain", "未分类")
+            rtags = [t.lower() for t in rcard.get("tags", [])]
         if rdomain == "未分类":
             rdomain = detect_domain(rmeta)
             rtags = [t.lower() for t in detect_tags(rmeta)]
@@ -657,27 +669,18 @@ def _related_for(meta, note, item_id, conn, timeout=None, retries=None, domain=N
     """
     if not conn:
         return []
-    # 取候选（已有收藏，排除自身）
-    cc = conn.cursor()
-    cc.execute("SELECT id,url,meta,card FROM repos WHERE id<>? AND meta IS NOT NULL", (item_id,))
+    # 取候选（已有收藏，排除自身）——快照统一读取/解析，避免重复全表扫 + 逐行 JSON
     cands = []
-    for rid, url, rmeta_s, rcard_s in cc.fetchall():
-        try:
-            rmeta = json.loads(rmeta_s) if rmeta_s else {}
-        except Exception:
-            rmeta = {}
+    for it in _candidate_rows(conn, item_id):
+        rmeta, rcard = it["meta"], it["card"]
         rdom = "未分类"; rtags = []
-        if rcard_s:
-            try:
-                rc = json.loads(rcard_s)
-                rdom = rc.get("domain", "未分类")
-                rtags = rc.get("tags", [])
-            except Exception:
-                pass
+        if rcard:
+            rdom = rcard.get("domain", "未分类")
+            rtags = rcard.get("tags", [])
         if rdom == "未分类":
             rdom = detect_domain(rmeta); rtags = detect_tags(rmeta)
         cands.append({
-            "id": rid, "name": rmeta.get("name") or url, "url": url,
+            "id": it["id"], "name": rmeta.get("name") or it["url"], "url": it["url"],
             "domain": rdom, "tags": rtags, "desc": rmeta.get("description") or "",
         })
     if not cands:
