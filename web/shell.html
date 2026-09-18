@@ -35,11 +35,19 @@
   <main class="app-main" id="panes"></main>
 </div>
 <script>
-// 外观应用：与 nav.js::applyAppearance 保持同一套规则，让壳工具栏配色跟随系统/设置
+// 外观应用：与 nav.js::applyAppearance 保持同一套规则，让壳工具栏配色跟随系统/设置。
+// 每次应用都重新读 localStorage（不缓存闭包值），这样内页改完观感后父窗能拿到最新值；
+// 并把变更广播给所有常驻 iframe，让已加载过的页面也同步切换观感。
 (function () {
-  var a = {};
-  try { a = JSON.parse(localStorage.getItem("appearance") || "{}") || {}; } catch (e) {}
+  function frameworkAppearance() {
+    var keys = Array.prototype.slice.call(document.querySelectorAll("iframe.pane-frame"));
+    keys.forEach(function (f) {
+      try { if (f.contentWindow) f.contentWindow.dispatchEvent(new Event("app:appearance")); } catch (e) {}
+    });
+  }
   function apply() {
+    var a = {};
+    try { a = JSON.parse(localStorage.getItem("appearance") || "{}") || {}; } catch (e) {}
     var th = a.theme || "system";
     var dark = th === "dark" ||
       (th === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -50,10 +58,12 @@
     doc.style.zoom = ({ small: 0.92, large: 1.08 })[a.size] || 1;
   }
   apply();
-  window.addEventListener("app:appearance", apply);   // 内页改主题后父窗跟随
+  // 任意内页改观感 → 重读本地值应用壳 + 广播给所有常驻 iframe 同步
+  window.addEventListener("app:appearance", function () { apply(); frameworkAppearance(); });
+  // 系统深浅切换：父窗跟随后同样广播
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: dark)")
-      .addEventListener("change", function () { apply(); });
+      .addEventListener("change", function () { apply(); frameworkAppearance(); });
   }
 })();
 

@@ -31,7 +31,7 @@
     try { a = JSON.parse(localStorage.getItem("appearance") || "{}") || {}; } catch (e) {}
     return a;
   }
-  function applyAppearance() {
+  function applyAppearance(nosignal) {
     var a = readAppearance();
     var th = a.theme || "system";
     var dark = th === "dark" ||
@@ -43,12 +43,19 @@
     var size = ({ small: 0.92, large: 1.08 })[a.size] || 1;
     doc.style.zoom = size;
     // 被内嵌在壳 iframe 里时，把外观变更通知给父窗，让壳工具栏配色即时跟随
-    try {
-      if (window.self !== window.top) window.parent.dispatchEvent(new Event("app:appearance"));
-    } catch (e) {}
+    if (!nosignal) {
+      try {
+        if (window.self !== window.top) window.parent.dispatchEvent(new Event("app:appearance"));
+      } catch (e) {}
+    }
   }
   applyAppearance();
   window.applyAppearance = applyAppearance;
+  // 壳广播观感变更（在别的常驻 iframe 里改过）时，本页也重应用最新观感。
+  // nosignal=true 避免把信号再回发给父窗，防止 ping-pong 无限循环。
+  try {
+    if (window.self !== window.top) window.addEventListener("app:appearance", function () { applyAppearance(true); });
+  } catch (e) {}
 
   // 跨页跳转网关：被嵌在壳 iframe 里时交由父窗切 tab（保持各页常驻），独立打开时整页跳。
   window.goPage = function (href) {
