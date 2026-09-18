@@ -87,10 +87,7 @@
 <div class="layout">
   <div class="graph-wrap">
     <div class="toolbar">
-      <span class="btn ax" data-axis="domain">领域</span>
-      <span class="btn ax" data-axis="tech">技术栈</span>
-      <span class="btn ax" data-axis="motive">动机</span>
-      <span class="btn ax" data-axis="use">用过吗</span>
+      <span id="axisBtns"></span>
       <span class="btn" id="btn-reset">重置视图</span>
     </div>
     <svg id="svg"></svg>
@@ -133,14 +130,47 @@ const PALETTE = {
   "数据库":"#6B8E5A","CLI/工具":"#8A8275","移动端":"#8A6BA8","安全":"#B4472F",
   "数据/可视化":"#3F7FA0","知识/笔记":"#A8743F","未分类":"#9A938A"
 };
-// 多轴投影：图可以按任意一维来分色 / 分组 —— 不只是领域
-const AXES = [
-  {key:"domain", label:"领域",   unit:"个领域"},
-  {key:"tech",   label:"技术栈", unit:"种技术栈"},
-  {key:"motive", label:"动机",   unit:"种动机"},
-  {key:"use",    label:"用过吗", unit:"种结果"}
-];
-let curAxis = "domain";
+// 筛选维度不写死：按钮按收藏数据里真实出现的轴维度动态生成（见 buildAxes↓）。
+// 已知维度的「键→标签/单位」映射；未知键用原始键名兜底。
+const AXIS_META = {
+  "domain":   ["领域",   "个领域"],
+  "tech":     ["技术栈", "种技术栈"],
+  "motive":   ["动机",   "种动机"],
+  "use":      ["用过吗", "种结果"],
+  "scene":    ["使用场景","种场景"],
+  "gap":      ["认知缺角","类缺角"],
+  "timeline": ["时间线", "个时段"]
+};
+// 展示顺序：已知维度按约定顺序在前，未知维度按名称排后；超过上限就截断。
+const AXIS_ORDER = ["domain","tech","motive","use","scene","gap","timeline"];
+const MAX_AXIS = 6;
+let AXES = [];
+let curAxis = null;
+
+// 从本次数据收齐所有出现过的轴维度，生成筛选按钮的元信息（受 MAX_AXIS 限制）。
+function buildAxes(){
+  const set = new Set();
+  nodes.forEach(n => (n.axes || []).forEach(a => set.add(a.axis)));
+  // 领域始终是主维度：即便当前还没任何仓库，也保留它当默认投影。
+  if(!set.has("domain")) set.add("domain");
+  const known = AXIS_ORDER.filter(k => set.has(k));
+  const extra = [...set].filter(k => !AXIS_ORDER.includes(k)).sort();
+  const keys = known.concat(extra).slice(0, MAX_AXIS);
+  AXES = keys.map(k => {
+    const m = AXIS_META[k] || [k, k];
+    return {key:k, label:m[0], unit:m[1]};
+  });
+  if(!curAxis || !AXES.some(a => a.key === curAxis)) curAxis = (AXES[0] && AXES[0].key) || "domain";
+}
+// 把筛选按钮渲染进工具栏，并绑定切换逻辑。
+function renderToolbar(){
+  const box = document.getElementById("axisBtns");
+  box.innerHTML = AXES.map(a =>
+    '<span class="btn ax" data-axis="'+esc(a.key)+'">'+esc(a.label)+'</span>').join('');
+  box.querySelectorAll(".btn.ax").forEach(b => {
+    b.onclick = ()=>{ curAxis = b.getAttribute("data-axis"); selId = null; applyAxis(); };
+  });
+}
 
 // 节点在当前轴上的取值：取置信度最高的那个；没有就归到「未分类」
 function nodeGroup(n){
@@ -193,6 +223,8 @@ function load(){
     document.getElementById("st-gap").textContent = g.gaps.length;
     renderLinks(g.domain_links || []);
     renderGaps(g.gaps, g.sample || g.total || 0);
+    buildAxes();       // 按数据实际出现的维度生成筛选按钮
+    renderToolbar();
     applyAxis();   // 按当前轴重算边 / 分组 / 配色 / 图例
   }).catch(e=>{
     document.getElementById("domains").innerHTML =
@@ -518,14 +550,7 @@ document.getElementById("btn-reset").onclick = ()=>{
   // 同时清掉拖拽记忆，给一个重新散开的出口（布局乱了就点这里）
   try { localStorage.removeItem(POS_KEY); } catch(e){}
 };
-// 轴切换：换一维看同一批收藏
-document.querySelectorAll(".btn.ax").forEach(b => {
-  b.onclick = ()=>{
-    curAxis = b.getAttribute("data-axis");
-    selId = null;
-    applyAxis();
-  };
-});
+// 轴切换逻辑已在 renderToolbar() 里按动态按钮绑定；这里不再重复绑定写死的按钮。
 window.addEventListener("resize", ()=>{ resize(); });
 
 // ---- AI 缺角识别：模型基于收藏画像推「还想要哪类领域」----
