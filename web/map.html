@@ -57,6 +57,7 @@
     text-overflow:ellipsis; white-space:nowrap; }
   .src-note{ font-size:11px; color:var(--faint); margin:-4px 0 10px; line-height:1.5;
     border-left:2px solid var(--line); padding-left:8px; }
+  .ai-refresh{ margin-top:8px; }
   .sample-warn{ font-size:12px; color:var(--warn); background:rgba(181,131,46,.10);
     border:1px solid rgba(181,131,46,.34); border-radius:8px; padding:8px 10px; margin-bottom:10px; }
   /* 碰撞桥接：生产端↔认知端在同一领域轴上相连 —— 用陶土虚线强调「两类收藏撞在一起」 */
@@ -106,6 +107,13 @@
     <h2>可能感兴趣（缺角）</h2>
     <div class="src-note">这一块是<b>种子先验</b>（编者预判的常见搭配），不是对你的行为统计 —— 样本够了以后会换成真共现。</div>
     <div id="gaps"></div>
+
+    <h2>AI 缺角识别</h2>
+    <div id="aiSection" hidden>
+      <div class="src-note">当前配置的模型基于你的收藏画像生成：推测你接下来还可能想关注哪类领域 + 为什么。置信度越高越可信。</div>
+      <div id="aiGaps"><div class="empty">生成中…</div></div>
+      <button class="btn ai-refresh" id="btn-ai-refresh">重新生成</button>
+    </div>
     <div class="note">关联边表示仓库间的领域 / 标签关系。缺角仅供参考，不代表你一定需要。</div>
 
     <h2>碰撞桥接</h2>
@@ -520,6 +528,33 @@ document.querySelectorAll(".btn.ax").forEach(b => {
 });
 window.addEventListener("resize", ()=>{ resize(); });
 
+// ---- AI 缺角识别：模型基于收藏画像推「还想要哪类领域」----
+function loadAiGaps(){
+  const box = document.getElementById("aiSection");
+  const list = document.getElementById("aiGaps");
+  fetch("/api/graph/gaps").then(r=>r.json()).then(d=>{
+    if(d.source !== "llm" || !d.gaps.length){ box.hidden = true; return; }
+    box.hidden = false;
+    list.innerHTML = d.gaps.map(g =>
+      '<div class="gap"><span class="tag">AI · '+esc(g.confidence||'低')+'</span>'+
+      '<div class="t">'+esc(g.domain)+'</div>'+
+      '<div class="h">'+esc(g.reason||'')+'</div></div>').join('');
+  }).catch(()=>{ box.hidden = true; });
+}
+document.getElementById("btn-ai-refresh").onclick = function(){
+  document.getElementById("aiGaps").innerHTML = '<div class="empty">生成中…</div>';
+  fetch("/api/graph/gaps?refresh=1").then(r=>r.json()).then(d=>{
+    const box = document.getElementById("aiSection"), list = document.getElementById("aiGaps");
+    if(d.source !== "llm" || !d.gaps.length){ box.hidden = true; return; }
+    box.hidden = false;
+    list.innerHTML = d.gaps.map(g =>
+      '<div class="gap"><span class="tag">AI · '+esc(g.confidence||'低')+'</span>'+
+      '<div class="t">'+esc(g.domain)+'</div>'+
+      '<div class="h">'+esc(g.reason||'')+'</div></div>').join('');
+  }).catch(()=>{ document.getElementById("aiGaps").innerHTML = '<div class="empty">读不到，确认服务在运行。</div>'; });
+};
+
+loadAiGaps();
 load();
 </script>
 <script src="/nav.js"></script>

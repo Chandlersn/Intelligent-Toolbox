@@ -568,6 +568,36 @@ def get_recommendations():
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  AI 缺角识别（图谱侧）：模型基于收藏画像推「还想要哪类领域」
+# ═══════════════════════════════════════════════════════════════════
+# 与 get_recommendations 复用同一份 _llm_recommend_insight，但它是图谱自己的
+# 独立端点：不塞进 /api/graph（那个被前端 8s 轮询，塞 LLM 会拖慢每次刷新）。
+_GAP_AI = {"ts": 0.0, "data": None}
+_GAP_AI_TTL = 3600
+_GAP_AI_TTL_OFF = 60  # 模型不可用时短缓存，避免反复打 _load_llm
+
+
+def get_gap_insights(force=False):
+    """模型生成的缺角建议。source=llm（有）| off（模型不可用）。
+
+    1h 缓存；force=刷新 绕过缓存重新生成（前端「重新生成」按钮用）。
+    """
+    t = time.time()
+    if not force and _GAP_AI["data"] is not None:
+        ttl = _GAP_AI_TTL if _GAP_AI["data"]["source"] == "llm" else _GAP_AI_TTL_OFF
+        if t - _GAP_AI["ts"] < ttl:
+            return _GAP_AI["data"]
+    insights = analyze._llm_recommend_insight(_build_profile_text())
+    if insights:
+        data = {"ok": True, "source": "llm", "gaps": insights}
+    else:
+        data = {"ok": True, "source": "off", "gaps": []}
+    _GAP_AI["ts"] = t
+    _GAP_AI["data"] = data
+    return data
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  行为画像（行为层，不并入知识库）
 # ═══════════════════════════════════════════════════════════════════
 def _build_profile_uncached():
@@ -1840,6 +1870,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"filters": filters, "count": len(items), "items": items})
         elif path == "/api/graph":
             self._send(200, get_graph())
+        elif path == "/api/graph/gaps":
+            force = bool(qs.get("refresh", [""])[0])
+            self._send(200, get_gap_insights(force=force))
         elif path == "/api/recommend":
             self._send(200, get_recommendations())
         elif path == "/api/trending":
