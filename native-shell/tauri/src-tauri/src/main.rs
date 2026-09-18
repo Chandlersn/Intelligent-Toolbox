@@ -17,42 +17,80 @@ fn client() -> &'static reqwest::blocking::Client {
     CLIENT.get_or_init(|| reqwest::blocking::Client::new())
 }
 
-/// 把深链里的链接转给收集器后端完成收藏。
-/// 支持 repocollector://collect?url=... 或 ?text=...（整段文本由服务端抽取）。
-fn forward_to_collector(raw: &str) {
-    // raw 形如 repocollector://collect?url=https://github.com/owner/repo
-    let query = match raw.split_once('?') {
-        Some((_, q)) => q,
-        None => raw, // 没有 ?，整段当作 url
-    };
-
-    let mut params: HashMap<String, String> = HashMap::new();
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            params.insert(k.to_string(), v.to_string());
+/// 最小 percent-decode（含 query 的 `+`→空格），兼容中文链接、含 `&`/`%2F` 的 URL。
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' && i + 2 < bytes.len() {
+            let h = (bytes[i + 1] as char).to_digit(16);
+            let l = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (h, l) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
         }
+        out.push(if b == b'+' { b' ' } else { b });
+        i += 1;
     }
-    let url = params.get("url").cloned().unwrap_or_default();
-    let text = params.get("text").cloned().unwrap_or_default();
+    String::from_utf8_lossy(&out).into_owned()
+}
 
-    // 服务端 /collect 的 POST 逻辑：给了 url 直接收；只给 text 时从文本抽链接。
-    // 这里按同一约定组包：有 url 走 url，否则把整段 text 作为 text 字段发出去。
-    #[derive(Serialize)]
-    struct Payload<'a> {
-        url: &'a str,
-        text: &'a str,
-    }
-    let payload = Payload {
-        url: &url,
-        text: &text,
+/// 把深链 / 命令行给的链接或文本转给收集器后端完成收藏。
+/// 支持：repocollector://collect?url=...&text=...、裸 `url=/text=`、裸 URL 三种形态。
+/// 组装约定与服务端 /collect 一致：给了 url 直接收；只给 text 时由服务端从文本抽链接。
+fn forward_to_collector(raw: &str) {
+    let trimmed = raw.trim();
+    // 只剥自有 scheme 前缀，避免误伤 https:// 等真实链接。
+    let rest = trimmed.strip_prefix("repocollector://").unwrap_or(trimmed);
+
+    let (url, text) = if rest.contains("url=") || rest.contains("text=") {
+        // 有参数：取 '?' 之后为 query（无 '?' 时整段即 query）
+        let query = rest.split_once('?').map(|(_, q)| q).unwrap_or(rest);
+        let mut params: HashMap<String, String> = HashMap::new();
+        for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                params.insert(k.to_string(), percent_decode(v));
+            }
+        }
+        (
+            params.get("url").cloned().unwrap_or_default(),
+            params.get("text").cloned().unwrap_or_default(),
+        )
+    } else {
+        (rest.to_string(), String::new())
     };
-    let _ = client()
-        .post(format!("{}/collect", COLLECTOR_BASE))
-        .json(&payload)
-        .send();
+
+    // 放后台线程发，避免阻塞 Tauri 事件循环与深链回调。
+    std::thread::spawn(move || {
+        #[derive(Serialize)]
+        struct Payload<'a> {
+            url: &'a str,
+            text: &'a str,
+        }
+        let payload = Payload {
+            url: &url,
+            text: &text,
+        };
+        let _ = client()
+            .post(format!("{}/collect", COLLECTOR_BASE))
+            .json(&payload)
+            .send();
+    });
 }
 
 fn main() {
+    // 命令行直达：「收藏箱」支持被系统「发送到」快捷方式或脚本以 URL / 深链调用，
+    // 启动时把第一个参数直接甩给收集器，再照常弹出常驻悬浮球。
+    for arg in std::env::args().skip(1) {
+        if !arg.trim().is_empty() {
+            forward_to_collector(&arg);
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {

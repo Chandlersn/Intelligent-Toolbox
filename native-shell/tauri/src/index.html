@@ -12,9 +12,9 @@
 <!-- 跨源嵌入：显式指向运行中的收集器端点 -->
 <script>window.REPO_COLLECTOR = "http://127.0.0.1:8732/collect";</script>
 <!-- ball.js 从收集器加载（唯一真源在 web/ball.js，与 Android 壳同一套做法），
-     本地那份 src/ball.js 只是离线兜底快照，运行时不再加载，避免两处漂移 -->
+     ../src 里那份 ball.js 只是离线兜底快照，运行时不再加载，避免两处漂移 -->
 <script src="http://127.0.0.1:8732/ball.js"></script>
-<!-- 桌面深链（repocollector://collect?...）被唤起时，让球弹个提示 -->
+<!-- 桌面深链（repocollector://collect?...）/ 命令行直达被唤起时，让球弹个提示 -->
 <script>
   if (window.__TAURI__ && window.__TAURI__.event) {
     window.__TAURI__.event.listen('deep-link-received', function (e) {
