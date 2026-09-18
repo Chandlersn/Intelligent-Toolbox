@@ -20,6 +20,7 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -1180,11 +1181,20 @@ def collect_payload(url, note, source="manual"):
         return (200, {"ok": True, "id": existing[0], "status": existing[1], "dup": True})
     # 非硬性重复：同 owner/repo 的近重复仅软提示，不阻断入库
     near = _near_dup(c, platform, path)
-    c.execute("INSERT INTO repos (url,note,status,created_at,source,kind) VALUES (?,?,?,?,?,?)",
-              (url, note, "queued", now(), source, category))
-    item_id = c.lastrowid
-    conn.commit()
-    conn.close()
+    try:
+        c.execute("INSERT INTO repos (url,note,status,created_at,source,kind) VALUES (?,?,?,?,?,?)",
+                  (url, note, "queued", now(), source, category))
+        item_id = c.lastrowid
+        conn.commit()
+        conn.close()
+    except sqlite3.IntegrityError:
+        # 并发下两条相同 URL 同时过了上面的查重：后到的撞 UNIQUE(url)。
+        # 当作「已在途/已收藏」幂等返回，绝不重复入库、不重复起 worker。
+        conn.rollback(); conn.close()
+        row = db.connect().execute("SELECT id,status FROM repos WHERE url=?", (url,)).fetchone()
+        if row:
+            return (200, {"ok": True, "id": row[0], "status": row[1], "dup": True})
+        raise
     threading.Thread(target=worker, args=(item_id, url, note, platform, path, source),
                      daemon=True).start()
     body = {"ok": True, "id": item_id, "status": "queued", "source": source, "kind": category}
