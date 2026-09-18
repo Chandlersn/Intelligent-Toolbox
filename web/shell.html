@@ -19,9 +19,9 @@
     #app-shell{flex-direction:column}
     .app-nav{order:2;border-bottom:none;border-top:1px solid var(--line);
       padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+    .app-tabs{flex:1;justify-content:space-between}
     #panes{order:1}
   }
-  .app-logo{font-weight:600;font-size:15px;color:var(--accent);letter-spacing:.3px;white-space:nowrap}
   .app-tabs{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
   .app-tabs::-webkit-scrollbar{display:none}
   .app-tab{border:1px solid transparent;background:transparent;color:var(--muted);
@@ -36,7 +36,6 @@
 <body data-nav="">
 <div id="app-shell">
   <nav class="app-nav">
-    <span class="app-logo">收藏箱</span>
     <div class="app-tabs" id="tabs"></div>
   </nav>
   <main class="app-main" id="panes"></main>
@@ -113,7 +112,6 @@
 
   function showTab(key) {
     activeKey = key;
-    try { sessionStorage.setItem("shell_tab", key); } catch (e) {}
     var btns = tabs.querySelectorAll(".app-tab");
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle("active", btns[i].getAttribute("data-key") === key);
     for (var k in frames) {
@@ -145,10 +143,8 @@
     tabs.appendChild(b);
   });
 
-  var remembered = null;
-  try { remembered = sessionStorage.getItem("shell_tab"); } catch (e) {}
-  var start = "cards";
-  for (var i = 0; i < PAGES.length; i++) if (PAGES[i].key === remembered) { start = remembered; break; }
+  // 默认落在「收藏」页，不做上次所在页的记忆，保证每次打开都先看到收藏页
+  var start = "collect";
   ensureFrame(start);
   showTab(start);
 })();
