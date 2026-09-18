@@ -91,7 +91,6 @@
       <span class="btn ax" data-axis="motive">动机</span>
       <span class="btn ax" data-axis="use">用过吗</span>
       <span class="btn" id="btn-reset">重置视图</span>
-      <span class="btn" id="btn-open" hidden>查看卡片 ↗</span>
     </div>
     <svg id="svg"></svg>
   </div>
@@ -444,7 +443,7 @@ function bindNode(g, n){
     if(Math.abs(x-n.x)>3||Math.abs(y-n.y)>3) moved=true;
     n.x=x; n.y=y;
   };
-  const up = ()=>{ n.fixed=false; if(moved) savePositions(); if(!moved) select(n.id); };
+  const up = ()=>{ n.fixed=false; if(moved) savePositions(); else openCard(n); };
 
   g.addEventListener("mousedown", e=>{ e.preventDefault(); down(e.clientX,e.clientY); });
   window.addEventListener("mousemove", e=>{ if(n.fixed) move(e.clientX,e.clientY); });
@@ -464,7 +463,7 @@ function showTip(n, e){
     '<br>'+kindTxt+
     '<br>星标：'+(n.stars||0).toLocaleString()+' · '+esc(n.maturity || '')+
     (n.purpose? '<br><br>'+esc(n.purpose) : '')+
-    '<br><span style="opacity:.72">单击高亮 · 点左上「查看卡片」跳到卡片页</span>';
+    '<br><span style="opacity:.72">点击这个节点 → 跳到它在卡片页的卡片</span>';
   tip.style.opacity = 1; moveTip(e);
 }
 function moveTip(e){ tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; }
@@ -474,6 +473,8 @@ function select(id){
   selId = (selId===id)? null : id;
   applyHighlight();
 }
+// 点击节点 → 跳到它在卡片页对应的那张卡
+function openCard(n){ location.href = "cards.html?focus=" + n.id; }
 function toggleDomain(name){
   // 点击领域：高亮该领域所有节点
   const any = nodes.some(n=>n.domain===name && selId!=="D:"+name);
@@ -483,9 +484,6 @@ function toggleDomain(name){
 function applyHighlight(){
   const nb = selId && !String(selId).startsWith("D:") ? neighbors(selId) : null;
   const domainFilter = selId && String(selId).startsWith("D:") ? selId.slice(2) : null;
-  // 只有「选中单个节点」时才浮现「查看卡片」：可与跳转卡片页无缝衔接
-  const btnOpen = document.getElementById("btn-open");
-  if(btnOpen) btnOpen.hidden = !(selId && !String(selId).startsWith("D:"));
   window.__nodeEls.forEach(({g,n})=>{
     let on = true;
     if(domainFilter) on = (nodeGroup(n) === domainFilter);
@@ -511,11 +509,6 @@ document.getElementById("btn-reset").onclick = ()=>{
   selId = null; applyHighlight();
   // 同时清掉拖拽记忆，给一个重新散开的出口（布局乱了就点这里）
   try { localStorage.removeItem(POS_KEY); } catch(e){}
-};
-// 选中某个节点后浮现——跳到它在卡片页对应的那张卡
-document.getElementById("btn-open").onclick = ()=>{
-  const n = byId[selId];
-  if(n) location.href = "cards.html?focus=" + n.id;
 };
 // 轴切换：换一维看同一批收藏
 document.querySelectorAll(".btn.ax").forEach(b => {
