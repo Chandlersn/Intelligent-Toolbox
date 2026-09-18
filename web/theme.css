@@ -200,3 +200,46 @@ svg{background:radial-gradient(circle at 50% 40%, #FFFFFF 0%, var(--bg) 72%);tou
 @media (max-width:760px){
   .graph-wrap{border-right:none;border-bottom:1px solid var(--line)}
 }
+
+/* ============================================================
+ * 设置页驱动的观感层：明暗 / 主题色 / 字体（不改组件，只覆盖 :root 变量）
+ * html[data-theme] / html[data-accent] / html[data-font] 由 nav.js 统一切换。
+ * ============================================================ */
+
+/* 深色（暖墨夜） */
+[data-theme="dark"]{
+  --bg:        #1B1916;
+  --surface:   #24221E;
+  --surface-2: #2C2A25;
+  --overlay:   rgba(0,0,0,.55);
+  --ink:       #ECE8E0;
+  --muted:     #A8A196;
+  --faint:     #7A746A;
+  --on-ink:    #1B1916;
+  --line:      #3A3730;
+  --line-soft: #302E28;
+  --accent:      #D08A5E;
+  --accent-2:    #E0A070;
+  --accent-ink:  #1B1916;
+  --accent-dim:  rgba(208,138,94,.16);
+  --accent-line: rgba(208,138,94,.45);
+  --ok:   #6FA08E;
+  --warn: #C9A04F;
+  --err:  #D2695A;
+}
+[data-theme="dark"] .toast{background:rgba(0,0,0,.92);border-color:rgba(255,255,255,.12);color:#ECE8E0}
+[data-theme="dark"] svg{background:radial-gradient(circle at 50% 40%, #24221E 0%, var(--bg) 72%)}
+
+/* 主题色可选：陶土(默认) / 竹青 / 靛蓝 */
+[data-accent="bamboo"]{
+  --accent:#4F7164; --accent-2:#6B8A7D; --accent-ink:#FFFFFF;
+  --accent-dim:rgba(79,113,100,.14); --accent-line:rgba(79,113,100,.38);
+}
+[data-accent="indigo"]{
+  --accent:#4A6A9A; --accent-2:#6B8AB5; --accent-ink:#FFFFFF;
+  --accent-dim:rgba(74,106,154,.14); --accent-line:rgba(74,106,154,.38);
+}
+
+/* 字体样式可选：默认系统 / 圆润 / 衬线阅读 */
+[data-font="round"]{ --sans:"PingFang SC","Microsoft YaHei","Segoe UI",-apple-system,sans-serif; }
+[data-font="serif"]{ --sans:Georgia,"Times New Roman","Songti SC","SimSun",serif; }

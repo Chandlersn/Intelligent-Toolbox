@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#FBFAF7">
+<title>收藏箱 · 设置</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  body{max-width:560px;margin:0 auto;padding:env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom))}
+  header{padding:28px 4px 8px}
+  header h1{margin:0}
+  header p{margin:6px 0 0}
+
+  .sec{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px;margin-bottom:14px}
+  .sec-h{font-size:14px;font-weight:600;margin:0 0 4px}
+  .sec-d{font-size:12px;color:var(--muted);margin:0 0 12px;line-height:1.5}
+
+  .g{margin-bottom:15px}
+  .g:last-child{margin-bottom:0}
+  .gk{font-size:12.5px;color:var(--muted);margin-bottom:7px}
+  .opts{display:flex;gap:7px;flex-wrap:wrap}
+  .opt{border:1px solid var(--line);background:var(--surface-2);color:var(--ink);
+    border-radius:var(--r);padding:7px 13px;font-size:13px;font-family:inherit;
+    cursor:pointer;user-select:none;transition:all .12s var(--ease)}
+  .opt:hover{border-color:var(--accent)}
+  .opt.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  .opt .sw{display:inline-block;width:11px;height:11px;border-radius:3px;border:1px solid var(--line);
+    margin-right:6px;vertical-align:-1px}
+  .opt.on .sw{border-color:currentColor}
+
+  .abtn{width:100%;margin-top:2px}
+  .split{height:1px;background:var(--line-soft);margin:14px 0}
+
+  .row-info{display:flex;justify-content:space-between;gap:10px;align-items:baseline;
+    font-size:13px;padding:6px 0;border-bottom:1px dashed var(--line-soft)}
+  .row-info:last-child{border-bottom:none}
+  .row-info .k{color:var(--muted);flex:none}
+  .row-info .v{color:var(--ink);text-align:right;word-break:break-all}
+  .row-info .v.off{color:var(--faint)}
+  .pill-st{font-size:11px;border-radius:999px;padding:1px 8px;white-space:nowrap}
+  .pill-st.on{color:var(--ok);border:1px solid var(--ok);background:rgba(63,107,94,.10)}
+  .pill-st.off{color:var(--faint);border:1px solid var(--line);background:transparent}
+  .msg{font-size:12px;color:var(--muted);margin-top:9px;min-height:16px}
+  .msg.ok{color:var(--ok)}
+  .msg.err{color:var(--err)}
+</style>
+</head>
+<body data-nav="settings">
+<header>
+  <h1>设置</h1>
+  <p>就先看看这台机器上怎么用着顺手——观感、缓存、还有模型能力的状态。</p>
+</header>
+
+<div class="wrap">
+
+  <section class="sec">
+    <div class="sec-h">观感</div>
+    <p class="sec-d">改完即时生效，所有页面通用（记在本机 localStorage）。</p>
+
+    <div class="g">
+      <div class="gk">明暗</div>
+      <div class="opts" id="optTheme">
+        <button class="opt" data-v="light"><span class="sw"></span>浅色</button>
+        <button class="opt" data-v="system"><span class="sw"></span>跟随系统</button>
+        <button class="opt" data-v="dark"><span class="sw"></span>深色</button>
+      </div>
+    </div>
+
+    <div class="g">
+      <div class="gk">主题色</div>
+      <div class="opts" id="optAccent">
+        <button class="opt" data-v=""><span class="sw"></span>陶土</button>
+        <button class="opt" data-v="bamboo"><span class="sw"></span>竹青</button>
+        <button class="opt" data-v="indigo"><span class="sw"></span>靛蓝</button>
+      </div>
+    </div>
+
+    <div class="g">
+      <div class="gk">字体样式</div>
+      <div class="opts" id="optFont">
+        <button class="opt" data-v=""><span class="sw"></span>默认</button>
+        <button class="opt" data-v="round"><span class="sw"></span>圆润</button>
+        <button class="opt" data-v="serif"><span class="sw"></span>衬线阅读</button>
+      </div>
+    </div>
+
+    <div class="g">
+      <div class="gk">字号</div>
+      <div class="opts" id="optSize">
+        <button class="opt" data-v="small"><span class="sw"></span>较小</button>
+        <button class="opt" data-v="default"><span class="sw"></span>标准</button>
+        <button class="opt" data-v="large"><span class="sw"></span>较大</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-h">数据与缓存</div>
+    <p class="sec-d">清除的是本地过渡状态（筛选上下文、临时缓存），不动收藏数据。</p>
+    <button class="abtn muted" id="clearTransient">清除本地过渡缓存</button>
+    <button class="abtn muted" id="resetAppearance">恢复默认观感</button>
+    <div class="msg" id="dataMsg"></div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-h">模型与能力</div>
+    <p class="sec-d">只读：配置当前走启动时的环境变量，重启服务后改环境变量即可调整。</p>
+    <div id="infoRows"><div class="msg">读取中…</div></div>
+  </section>
+
+</div>
+
+<script src="/nav.js"></script>
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function toKeyName(k){return {theme:'theme',accent:'accent',font:'font',size:'size'}[k]||k}
+
+// ---- 观感控件：读 localStorage 回填选中，改则存并即时应用 ----
+function currentAppearance(){
+  var a={}; try{a=JSON.parse(localStorage.getItem('appearance')||'{}')||{}}catch(e){}
+  return a;
+}
+function initOpts(optId,key,defaultV){
+  var a=currentAppearance();
+  var cur=a[key]||defaultV;
+  var box=document.getElementById(optId);
+  box.querySelectorAll('.opt').forEach(function(o){
+    o.classList.toggle('on', o.getAttribute('data-v')===cur);
+  });
+  box.addEventListener('click', function(e){
+    var o=e.target.closest('.opt'); if(!o) return;
+    box.querySelectorAll('.opt').forEach(function(x){x.classList.remove('on')});
+    o.classList.add('on');
+    var a=currentAppearance();
+    a[key]=o.getAttribute('data-v')||'';
+    try{localStorage.setItem('appearance',JSON.stringify(a))}catch(err){}
+    window.applyAppearance();
+  });
+}
+initOpts('optTheme','theme','system');
+initOpts('optAccent','accent','');
+initOpts('optFont','font','');
+initOpts('optSize','size','default');
+
+// ---- 数据与缓存 ----
+var dataMsg=document.getElementById('dataMsg');
+function note(t,cls){ dataMsg.className='msg '+(cls||''); dataMsg.textContent=t; }
+
+document.getElementById('clearTransient').addEventListener('click', function(){
+  var cleared=[];
+  try{ ['cards_filter_v1'].forEach(function(k){ if(sessionStorage.removeItem(k)!==undefined) cleared.push(k); }); }catch(e){}
+  try{ localStorage.removeItem('appearance'); }catch(e){}
+  note(cleared.length ? '已清除：'+cleared.join('、')+'（筛选上下文）。' : '没有可清的过渡缓存。', 'ok');
+});
+
+document.getElementById('resetAppearance').addEventListener('click', function(){
+  try{ localStorage.removeItem('appearance'); }catch(e){}
+  window.applyAppearance();
+  initOpts('optTheme','theme','system');
+  initOpts('optAccent','accent','');
+  initOpts('optFont','font','');
+  initOpts('optSize','size','default');
+  note('已恢复默认观感。','ok');
+});
+
+// ---- 模型与能力：只读展示 /api/doctor ----
+function pill(on,label){ return '<span class="pill-st '+(on?'on':'off')+'">'+esc(label)+'</span>'; }
+function infoRow(k,v,off){ return '<div class="row-info"><span class="k">'+esc(k)+'</span>'+
+  (String(v).indexOf('pill-st')>=0 ? '<span class="v">'+v+'</span>' : '<span class="v'+(off?' off':'')+'">'+v+'</span>')+'</div>'; }
+function fmtSize(n){ n=n||0; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
+
+fetch('/api/doctor').then(function(r){return r.json()}).then(function(d){
+  var llm=d.llm||{}, t=d.transcribe||{}, g=d.github||{}, db=d.db||{};
+  var rows=
+    infoRow('模型 / LLM', pill(!!llm.available, llm.available?'可用':'未启用'))+
+    infoRow('LLM 模块', llm.root||'—')+
+    infoRow('GitHub Token', pill(!!g.token, g.token?'已配置':'未配置'))+
+    infoRow('转写就绪', pill(!!t.ready, t.ready?'就绪':'缺依赖'), !t.ready)+
+    infoRow('转写模型', (t.whisper_model||'—'))+
+    infoRow('ffmpeg', (t.ffmpeg_bin||'—'))+
+    infoRow('数据库', (db.path||'—'))+
+    (db.size!=null ? infoRow('DB 大小', fmtSize(db.size)) : '');
+  document.getElementById('infoRows').innerHTML=rows;
+}).catch(function(){
+  document.getElementById('infoRows').innerHTML='<div class="msg err">读不到服务状态，确认服务在运行。</div>';
+});
+</script>
+</body>
+</html>

@@ -24,12 +24,35 @@
     };
   })();
 
+  /* 观感应用（设置页驱动）：明暗 / 主题色 / 字体 / 字号，统一在 tool body 阶段应用。
+   * 供设置页 live 调整：window.applyAppearance() */
+  function readAppearance() {
+    var a = {};
+    try { a = JSON.parse(localStorage.getItem("appearance") || "{}") || {}; } catch (e) {}
+    return a;
+  }
+  function applyAppearance() {
+    var a = readAppearance();
+    var th = a.theme || "system";
+    var dark = th === "dark" ||
+      (th === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    var doc = document.documentElement;
+    doc.setAttribute("data-theme", dark ? "dark" : "light");
+    if (a.accent) doc.setAttribute("data-accent", a.accent); else doc.removeAttribute("data-accent");
+    if (a.font) doc.setAttribute("data-font", a.font); else doc.removeAttribute("data-font");
+    var size = ({ small: 0.92, large: 1.08 })[a.size] || 1;
+    doc.style.zoom = size;
+  }
+  applyAppearance();
+  window.applyAppearance = applyAppearance;
+
   var PAGES = [
     { key: "collect",   href: "/",                label: "收藏",   short: "收" },
     { key: "cards",     href: "/cards.html",      label: "卡片",   short: "卡" },
     { key: "map",       href: "/map.html",        label: "图谱",   short: "图" },
     { key: "recommend", href: "/recommend.html",  label: "推荐",   short: "荐" },
-    { key: "profile",   href: "/profile.html",    label: "画像",   short: "像" }
+    { key: "profile",   href: "/profile.html",    label: "画像",   short: "像" },
+    { key: "settings",  href: "/settings.html",   label: "设置",   short: "设" }
   ];
 
   // 当前页判定：优先 data-nav，其次按路径匹配
