@@ -878,12 +878,45 @@ document.getElementById('tocList').addEventListener('click', function(e){
 
 // 点卡片 → 该卡变成"当前卡片"，目录随之浮现/消失
 document.getElementById('wrap').addEventListener('click', function(e){
+  if(_suppressClick){ _suppressClick = false; return; }   // 滑动切换后吞掉这次"点旧的卡片"
   var t = e.target;
   if(t && t.closest && (t.closest('#tocFab') || t.closest('#tocPanel'))) return;
   var card = e.target && e.target.closest ? e.target.closest('.card') : null;
   if(!card) return;
   setActiveToc(card);
 });
+
+// 卡片左右滑动切换（移动端手感）：左滑 → 下一张，右滑 → 上一张；目录随之切到该卡
+var _suppressClick = false;   // 滑动结束后抑制紧随的 click，避免误激活旧卡片
+(function(){
+  var wrap = document.getElementById('wrap');
+  var sx = 0, sy = 0, tracking = false;
+  wrap.addEventListener('pointerdown', function(e){ sx = e.clientX; sy = e.clientY; tracking = true; });
+  wrap.addEventListener('pointerup', function(e){
+    if(!tracking){ return; } tracking = false;
+    var dx = e.clientX - sx, dy = e.clientY - sy;
+    if(Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.3) return;   // 非明确水平滑 → 忽略（保住纵向滚动/点按）
+    var cards = Array.prototype.slice.call(wrap.querySelectorAll('.card'));
+    if(!cards.length) return;
+    // 当前卡：优先激活卡；没有则取离视口中心最近的
+    var target = _tocCard && wrap.contains(_tocCard) ? _tocCard : null;
+    if(!target){
+      var center = window.innerHeight / 2, best = cards[0], bd = 1e9;
+      cards.forEach(function(c){
+        var r = c.getBoundingClientRect(), d = Math.abs((r.top + r.height / 2) - center);
+        if(d < bd){ bd = d; best = c; }
+      });
+      target = best;
+    }
+    var idx = cards.indexOf(target);
+    var go = (dx < 0) ? cards[idx + 1] : cards[idx - 1];
+    if(!go){ return; }
+    _suppressClick = true;
+    go.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    var gl = TOC[go.getAttribute('data-id')];
+    if(gl && gl.length){ setActiveToc(go); } else { closeToc(); }
+  });
+})();
 
 loadFacets();
 load();
