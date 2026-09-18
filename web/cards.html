@@ -399,6 +399,28 @@ var _focusId='';  // ?focus=<repo_id>：图谱/其它页跳来后定位到某张
   _focusId = qs.get('focus') || '';
 })();
 
+// 跨页往返保留筛选/搜索/排序：写进 sessionStorage，用底部导航去图谱/画像再回来不丢上下文。
+// 显式带 URL 参数（如画像/图谱钻取）时优先，不覆盖。
+var SEL_STORE = 'cards_filter_v1';
+function persistSel(){
+  try {
+    sessionStorage.setItem(SEL_STORE, JSON.stringify({
+      sel: SEL, q: document.getElementById('f-q').value, sort: document.getElementById('f-sort').value
+    }));
+  } catch(e){}
+}
+(function restoreSel(){
+  if(location.search && location.search.length > 1) return; // 显式 URL 参数优先
+  var raw; try { raw = sessionStorage.getItem(SEL_STORE); } catch(e){ return; }
+  if(!raw) return;
+  var d; try { d = JSON.parse(raw); } catch(e){ return; }
+  if(!d) return;
+  if(d.sel){ Object.keys(d.sel).forEach(function(k){ if(Array.isArray(d.sel[k])) SEL[k] = d.sel[k].slice(); }); }
+  var qEl = document.getElementById('f-q'), soEl = document.getElementById('f-sort');
+  if(qEl && d.q) qEl.value = d.q;
+  if(soEl && d.sort) soEl.value = d.sort;
+})();
+
 function loadFacets(){
   fetch('/api/facets').then(function(r){return r.json()}).then(function(f){
     LAYERS.forEach(function(layer){ renderPills(layer, f[layer]||[]); });
@@ -464,6 +486,7 @@ function load(){
   var w=document.getElementById('wrap');
   var q=document.getElementById('f-q').value.trim();
   var sort=document.getElementById('f-sort').value;
+  persistSel();
   var params=[];
   LAYERS.concat(['kind']).forEach(function(layer){
     SEL[layer].forEach(function(v){ params.push(layer+'='+encodeURIComponent(v)); });
