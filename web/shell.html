@@ -14,6 +14,13 @@
   .app-nav{flex:none;display:flex;align-items:center;gap:14px;
     padding:10px 16px;border-bottom:1px solid var(--line);
     background:var(--surface)}
+  /* 窄屏（手机 / 加主屏做 app）：导航沉到底部更像原生 app，内容在上 */
+  @media (max-width:760px){
+    #app-shell{flex-direction:column}
+    .app-nav{order:2;border-bottom:none;border-top:1px solid var(--line);
+      padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+    #panes{order:1}
+  }
   .app-logo{font-weight:600;font-size:15px;color:var(--accent);letter-spacing:.3px;white-space:nowrap}
   .app-tabs{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
   .app-tabs::-webkit-scrollbar{display:none}
