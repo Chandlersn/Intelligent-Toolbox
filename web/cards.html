@@ -68,13 +68,21 @@
   .fbar .ftop input[type=text]{flex:1; min-width:0; font-size:13px; color:var(--ink); background:var(--surface-2);
     border:1px solid var(--line); border-radius:var(--r); padding:7px 10px; font-family:inherit; outline:none}
   .fbar .ftop input[type=text]:focus{border-color:var(--accent)}
-  .fbar .ftop select{font-size:13px; color:var(--ink); background:var(--surface-2);
+  .fbar .ftop .csd{position:relative; flex:none}
+  .fbar .ftop .csd-trg{font-size:13px; color:var(--ink); background:var(--surface-2);
     border:1px solid var(--line); border-radius:999px; padding:7px 30px 7px 12px; font-family:inherit;
-    outline:none; cursor:pointer; appearance:none; -webkit-appearance:none;
+    outline:none; cursor:pointer;
     background-image:url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239A938A' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    background-repeat:no-repeat; background-position:right 12px center}
-  .fbar .ftop select:hover{border-color:var(--accent)}
-  .fbar .ftop select:focus{border-color:var(--accent)}
+    background-repeat:no-repeat; background-position:right 12px center; transition:border-color .12s var(--ease)}
+  .fbar .ftop .csd-trg:hover,.fbar .ftop .csd.open .csd-trg{border-color:var(--accent)}
+  .fbar .ftop .csd-panel{display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:60;
+    min-width:132px; background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    box-shadow:0 12px 30px rgba(35,32,27,.16); padding:5px}
+  .fbar .ftop .csd.open .csd-panel{display:flex; flex-direction:column; gap:1px}
+  .fbar .ftop .csd-opt{display:block; width:100%; text-align:left; font-size:13px; color:var(--ink);
+    background:transparent; border:none; border-radius:8px; padding:7px 11px; font-family:inherit; cursor:pointer}
+  .fbar .ftop .csd-opt:hover{background:var(--surface-2)}
+  .fbar .ftop .csd-opt.sel{color:var(--accent); background:var(--accent-dim)}
   .grp{margin-top:13px}
   .grp .gt{font-size:12px; color:var(--muted); margin-bottom:7px; display:flex; align-items:center; gap:6px}
   .grp .gt .cnt{color:var(--faint); font-size:11px}
@@ -183,11 +191,14 @@
 <div class="fbar">
   <div class="ftop">
     <input type="text" id="f-q" placeholder="搜索仓库名 / 标签 / 备注 / 用途…">
-    <select id="f-sort">
-      <option value="time">最近收藏</option>
-      <option value="stars">星标最多</option>
-      <option value="rec">推荐最高</option>
-    </select>
+    <div class="csd" id="f-sort">
+      <button type="button" class="csd-trg" id="f-sort-trg">最近收藏</button>
+      <div class="csd-panel" id="f-sort-panel">
+        <button type="button" class="csd-opt" data-v="time">最近收藏</button>
+        <button type="button" class="csd-opt" data-v="stars">星标最多</button>
+        <button type="button" class="csd-opt" data-v="rec">推荐最高</button>
+      </div>
+    </div>
   </div>
   <div class="grp" id="grp-kind">
     <div class="gt">类型</div>
@@ -255,6 +266,41 @@
 <div class="read-progress" id="readProgress"><i id="readProgressBar"></i></div>
 
 <script>
+// ── 自定义圆角下拉（排序）：替代原生 select，展开面板/选项带圆角 ──
+// 对外保持与 <select> 一致的接口：.value 读写、.addEventListener('change',fn)。
+// 这样下方 persistSel / load / restore 的 sorts= document.getElementById('f-sort').value 与 change 监听全部沿用。
+(function () {
+  var box = document.getElementById('f-sort');
+  if (!box) return;
+  var panel = document.getElementById('f-sort-panel');
+  var opts = panel.querySelectorAll('.csd-opt');
+  var val = 'time', listeners = [];
+  function syncUI() {
+    opts.forEach(function (o) { o.classList.toggle('sel', o.getAttribute('data-v') === val); });
+    var t = panel.querySelector('.csd-opt.sel');
+    document.getElementById('f-sort-trg').textContent = t ? t.textContent : '';
+  }
+  function setVal(v) {
+    if (v === val) return;
+    val = v; syncUI();
+    listeners.forEach(function (fn) { try { fn.call(box, { target: box }); } catch (e) {} });
+  }
+  // 与原生 select 兼容的 value 读写
+  Object.defineProperty(box, 'value', { get: function () { return val; }, set: function (v) { val = v; syncUI(); } });
+  box.addEventListener = function (t, fn) { if (t === 'change') listeners.push(fn); };
+  box.dispatchEvent = function () {};
+  box.open = function () { box.classList.add('open'); };
+  box.close = function () { box.classList.remove('open'); };
+  document.getElementById('f-sort-trg').addEventListener('click', function (e) { e.stopPropagation(); box.classList.toggle('open'); });
+  opts.forEach(function (o) {
+    o.addEventListener('click', function (e) { e.stopPropagation(); setVal(o.getAttribute('data-v')); box.close(); });
+  });
+  document.addEventListener('click', box.close);
+  syncUI();
+  // 初始值来自会话恢复时预设（restore 在下方 IIFE 里给 box.value 赋值）
+  if (box.value === 'time') syncUI();
+})();
+
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 
 // ── 轻量 markdown → HTML（零依赖）：标题 / 粗体 / 斜体 / 行内码 / 列表 / 引用 / 分隔 / 段落 ──
