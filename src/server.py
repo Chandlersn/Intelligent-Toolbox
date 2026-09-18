@@ -1108,9 +1108,59 @@ def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
         _BOOST_SEM.release()
 
 
+# GitHub/GitLab 的 query 从不标识仓库（owner/repo 在 path 里），
+# 分享/导航参数一律去除后做规范化查重，避免同一仓库因参数不同被当成两条。
+
+
+def normalize_repo_url(url):
+    """把 URL 收敛成"同一链接同一种写法"：
+    - 一律去掉 #fragment；
+    - GitHub/GitLab 再去掉尾部斜杠与全部 query（这类宿主指向哪一文件由 path 决定，query 不承载定位）；
+    - 抖音/网页分享链接的参数有语义，仅去 fragment，不擅动 query。
+    返回规范化后的字符串（供查重与入库共享，保证等价链接互相命中 dup）。"""
+    u = (url or "").strip().split("#", 1)[0]
+    if not u:
+        return u
+    try:
+        from urllib.parse import urlparse, urlunparse
+        p = urlparse(u)
+    except Exception:
+        return u
+    if not p.netloc:
+        return u
+    host = p.netloc.lower()
+    is_repo_host = host.endswith(("github.com", "githubusercontent.com")) or "gitlab" in host
+    if not is_repo_host:
+        return u
+    path = p.path.rstrip("/")
+    try:
+        return urlunparse((p.scheme, host, path or "/", p.params, "", ""))
+    except Exception:
+        return u
+
+
+def _near_dup(cursor, platform, path):
+    """同 owner/repo 的近重复（例如同名镜像/变体链接）→ 仅软提示，不阻断。
+    返回 None 或 {id, url}。仅在 GitHub/GitLab 上做，抖音/网页太模糊不做。"""
+    if platform not in ("github", "gitlab"):
+        return None
+    seg = [s for s in (path or "").split("/") if s]
+    if len(seg) < 2:
+        return None
+    owner, repo = seg[0].lower(), seg[1].lower()
+    if not owner or not repo:
+        return None
+    row = cursor.execute(
+        "SELECT id,url FROM repos WHERE lower(url) LIKE ? LIMIT 1", ("%/" + owner + "/" + repo + "%",)
+    ).fetchone()
+    if row:
+        return {"id": row[0], "url": row[1]}
+    return None
+
+
 def collect_payload(url, note, source="manual"):
     """校验 → 查重 → 同步落库 → 后台出卡。GET / POST 共用。返回 (http_code, body)。"""
-    url = (url or "").strip()
+    url = normalize_repo_url(url)
     note = (note or "").strip()
     source = source if source in SOURCES else "manual"
     kind_path = classify_source(url)
@@ -1128,6 +1178,8 @@ def collect_payload(url, note, source="manual"):
     if existing:
         conn.close()
         return (200, {"ok": True, "id": existing[0], "status": existing[1], "dup": True})
+    # 非硬性重复：同 owner/repo 的近重复仅软提示，不阻断入库
+    near = _near_dup(c, platform, path)
     c.execute("INSERT INTO repos (url,note,status,created_at,source,kind) VALUES (?,?,?,?,?,?)",
               (url, note, "queued", now(), source, category))
     item_id = c.lastrowid
@@ -1135,7 +1187,10 @@ def collect_payload(url, note, source="manual"):
     conn.close()
     threading.Thread(target=worker, args=(item_id, url, note, platform, path, source),
                      daemon=True).start()
-    return (200, {"ok": True, "id": item_id, "status": "queued", "source": source, "kind": category})
+    body = {"ok": True, "id": item_id, "status": "queued", "source": source, "kind": category}
+    if near:
+        body["near_dup"] = near
+    return (200, body)
 
 
 def regenerate_card(rid, timeout=None):

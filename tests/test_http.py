@@ -158,6 +158,27 @@ class TestHttp(Base):
         code, body2 = self.jreq("POST", "/collect", {"url": "https://github.com/a/b"})
         self.assertTrue(body2["dup"])
 
+    def test_collect_normalizes_equivalent_urls(self):
+        # 带跟踪参数 + 尾部斜杠 + fragment 的写法，规范化后应撞上同一仓库 → dup
+        code, body = self.jreq("POST", "/collect",
+                               {"url": "https://github.com/gh/x/?utm_source=news&sid=1#top"})
+        self.assertEqual(code, 200)
+        self.assertFalse(body.get("dup"))
+        code, body2 = self.jreq("POST", "/collect", {"url": "https://github.com/gh/x#readme"})
+        self.assertTrue(body2.get("dup"))
+
+    def test_collect_near_dup_soft_warns(self):
+        # 已收藏 owner/repo，再来一个不同大小写的"变体"链接：不硬阻断，仅 near_dup 软提示
+        self.add_repo("https://github.com/owner/repo", meta={"name": "owner/repo"})
+        code, body = self.jreq("POST", "/collect", {"url": "https://github.com/Owner/Repo"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body.get("ok"))
+        self.assertFalse(body.get("dup"))
+        self.assertEqual(server._near_dup.__name__, "_near_dup")  # 探针，确保符号存在
+        nd = body.get("near_dup")
+        self.assertIsNotNone(nd)
+        self.assertEqual(nd["url"], "https://github.com/owner/repo")
+
     def test_collect_rejects_bad_url(self):
         # 非 http(s) 链接仍拒绝（网页/文章链接已是合法来源）
         code, body = self.jreq("POST", "/collect", {"url": "ftp://example.com/a/b"})
