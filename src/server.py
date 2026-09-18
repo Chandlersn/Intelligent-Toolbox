@@ -23,6 +23,7 @@ import re
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, quote, parse_qs, unquote
@@ -341,6 +342,17 @@ GAP_SEARCH_KEYWORDS = {
 
 RECOMMEND_CACHE = {}
 RECOMMEND_TTL = 3600
+# GitHub 限流/失败状态：供 doctor 与前端引导（"限额用尽→去配 token"）。
+_RATE_STATE = {"limited": False, "at": None, "remaining": None}
+
+
+def _fail_cached(domain):
+    """GitHub 搜索失败/限流时只把空结果短缓存 ~60s。
+
+    若像成功路径那样缓存 3600s，一次限流会让该领域推荐哑火整整一小时；
+    60s 后自动重试，既不每次失败都打接口，也不长期哑火。
+    """
+    RECOMMEND_CACHE[domain] = (time.time() - (RECOMMEND_TTL - 60), [])
 
 
 def _github_headers():
@@ -360,6 +372,12 @@ def search_github(domain):
     try:
         req = urllib.request.Request(url, headers=_github_headers())
         with urllib.request.urlopen(req, timeout=8) as r:
+            try:
+                remaining = r.headers.get("X-RateLimit-Remaining")
+            except Exception:
+                remaining = None
+            if remaining is not None:
+                _RATE_STATE["remaining"] = remaining
             data = json.loads(r.read().decode("utf-8"))
         out = []
         for it in data.get("items", []):
@@ -376,8 +394,22 @@ def search_github(domain):
             })
             if len(out) >= 4:
                 break
+        _RATE_STATE["limited"] = False
         return out
+    except urllib.error.HTTPError as e:
+        _fail_cached(domain)
+        # 403 + 配额确认为 0 → 真限流，标记状态供前端/doctor 引导去配 token
+        if e.code == 403:
+            rem = None
+            try:
+                rem = e.headers.get("X-RateLimit-Remaining")
+            except Exception:
+                rem = None
+            if rem in (None, "0"):
+                _RATE_STATE.update({"limited": True, "at": time.time(), "remaining": rem})
+        return []
     except Exception:
+        _fail_cached(domain)
         return []
 
 
@@ -1414,12 +1446,19 @@ def doctor():
         _fw_ok = False
     _ff_present = bool(config.FFMPEG_BIN) and (
         config.FFMPEG_BIN == "ffmpeg" or os.path.isfile(config.FFMPEG_BIN))
+    # 缺什么 → 给普通用户可执行的中文引导，而不是只给布尔标志
+    _hint = None
+    if not _ff_present:
+        _hint = "缺 ffmpeg：抽音频这步无法工作。请安装 ffmpeg，或通过环境变量 REPO_FFMPEG_BIN 指到可执行文件。"
+    elif not _fw_ok:
+        _hint = "缺 faster-whisper 依赖：运行 python -m pip install faster-whisper，装完重启服务。"
     transcribe = {
         "ffmpeg_bin": config.FFMPEG_BIN,
         "ffmpeg_present": _ff_present,
         "whisper_model": config.WHISPER_MODEL,
         "whisper_available": _fw_ok,
         "ready": _ff_present and _fw_ok,
+        "hint": _hint,
     }
 
     return {
@@ -1434,6 +1473,12 @@ def doctor():
             "journal_mode": journal, "freelist": freelist, "size": size,
         },
         "transcribe": transcribe,
+        "github": {
+            "token": bool(config.GITHUB_TOKEN),
+            "rate_limited": _RATE_STATE["limited"],
+            "limit_at": _RATE_STATE["at"],
+            "remaining": _RATE_STATE["remaining"],
+        },
         "config": config.summary(),
     }
 
