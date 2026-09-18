@@ -135,19 +135,26 @@
   .rawdet summary:hover{ color:var(--accent); }
   /* 悬浮目录：长纪要导航（跳转后标题不被顶栏遮住） */
   .mdbox h2,.mdbox h3,.mdbox h4{ scroll-margin-top:14px }
-  /* 底部有固定导航条（nav.js 注入，高约 48px，z-index 9999）——悬浮按钮必须抬到它上方 */
-  .toc-fab{ display:none; position:fixed; right:14px; bottom:calc(60px + env(safe-area-inset-bottom)); z-index:60;
-    font:600 13px/1 var(--sans); color:var(--muted); background:var(--surface);
-    border:1px solid var(--line); border-radius:999px; padding:10px 15px;
-    cursor:pointer; user-select:none; box-shadow:0 6px 18px rgba(35,32,27,.14);
-    transition:color .15s var(--ease), border-color .15s var(--ease), transform .12s var(--ease) }
+  /* 单一悬浮「目录」控件：跟随"当前卡片"，出现在该卡笔记框右上角；
+     跳转不消失；点无目录的卡片才隐藏；点有目录的卡片自动浮现 */
+  .toc-fab{ display:none; position:fixed; z-index:70;
+    font:600 12.5px/1 var(--sans); color:var(--accent); background:var(--surface);
+    border:1px solid var(--accent-line); border-radius:999px; padding:7px 13px;
+    cursor:pointer; user-select:none; box-shadow:0 6px 16px rgba(35,32,27,.16);
+    transition:background .15s var(--ease), color .15s var(--ease) }
   .toc-fab.on{ display:inline-block }
-  .toc-fab:hover{ color:var(--accent); border-color:var(--accent-line); transform:translateY(-1px) }
-  .toc-panel{ display:none; position:fixed; right:14px; bottom:calc(112px + env(safe-area-inset-bottom)); z-index:60;
+  .toc-fab:hover{ background:var(--accent); color:var(--accent-ink) }
+  /* 悬浮目录面板：展开当前卡片专属章节，锚定在按钮下方 */
+  .toc-panel{ display:none; position:fixed; z-index:70;
     width:min(304px, 78vw); max-height:min(58vh, 440px); overflow:auto;
     background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
     box-shadow:0 16px 44px rgba(35,32,27,.20); padding:8px }
   .toc-panel.on{ display:block }
+  /* 阅读进度条：仅在有长笔记且卡片为"当前卡片"时顶栏显示一条极细进度线 */
+  .read-progress{ display:none; position:fixed; left:0; right:0; top:0; z-index:80;
+    height:2px; background:transparent }
+  .read-progress > i{ display:block; height:100%; background:var(--accent);
+    width:0; transition:width .12s linear }
   .toc-h{ font-size:12px; color:var(--faint); padding:6px 8px 8px;
     border-bottom:1px solid var(--line-soft); margin-bottom:4px;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
@@ -218,12 +225,13 @@
   </div>
 </div>
 
-<!-- 悬浮目录：从笔记的 ## / ### 标题抽取，点击平滑跳转到对应位置（长纪要导航） -->
+<!-- 悬浮目录：跟随"当前卡片"的单一控件。跳转不消失；点无目录的卡片才隐藏；点有目录的卡片自动浮现 -->
 <button class="toc-fab" id="tocFab" type="button" aria-label="目录">目录</button>
 <div class="toc-panel" id="tocPanel">
   <div class="toc-h" id="tocHead">目录</div>
   <div class="toc-list" id="tocList"></div>
 </div>
+<div class="read-progress" id="readProgress"><i id="readProgressBar"></i></div>
 
 <script>
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -335,7 +343,7 @@ function cardHTML(it){
                + '><summary>内容纪要 · '+sn.nsec+' 小节 · 约 '+bs.chars
                + ' 字（点击展开）</summary><div class="mdbox mdbody">'+mdToHtml(sn.body)+'</div></details>';
     }
-    tmdHtml = '<div class="row"><div class="k">逐字稿 · 结构化笔记'
+    tmdHtml = '<div class="row note-box" style="position:relative"><div class="k">逐字稿 · 结构化笔记'
             + '<span class="note-meta">约 '+st.chars+' 字 · '+st.mins+' 分钟</span></div>'
             + '<div class="mdbox">'+mdToHtml(sn.head)+'</div>'+bodyPart+'</div>';
   }
@@ -534,7 +542,7 @@ function render(items){
   applyUpdateBadges();
   buildTOC();                    // 重建后重新抽取目录（标题锚点 id 也要重挂）
   if(sy>0) window.scrollTo(0, sy);
-  updateTocFab();
+  closeToc();                    // 列表重建后收起已打开的目录浮层
   // 重建后恢复仍在重算中的卡片按钮状态（防止并发重算被整页刷新冲掉）
   Object.keys(REGEN).forEach(function(rid){
     var btn=w.querySelector('#card-'+cssId(rid)+' .abtn[data-act="regen"]');
@@ -721,7 +729,8 @@ document.addEventListener('click', function(e){
 
 // ══ 悬浮目录：从笔记标题（## / ###）抽取，点击跳转到对应位置 ══
 var TOC = {};          // cardId -> [{id, lvl, text, det}]
-var _tocRaf = 0;
+var _tocCid = '';      // 当前打开目录的卡片 id（空=已收起）
+var _tocCard = null;   // 当前打开目录的卡片 DOM 引用（用于滚动时贴住）
 
 function buildTOC(){
   TOC = {};
@@ -737,20 +746,8 @@ function buildTOC(){
                   text: h.textContent.trim(),
                   det: det ? (det.getAttribute('data-key') || '') : '' });
     });
-    if(list.length) TOC[cid] = list;
+    TOC[cid] = list;
   });
-}
-
-function activeTocCard(){
-  var best = null, bestD = Infinity;
-  Array.prototype.forEach.call(document.querySelectorAll('#wrap .card'), function(card){
-    if(!TOC[card.getAttribute('data-id')]) return;
-    var r = card.getBoundingClientRect();
-    if(r.bottom < 140) return;                                 // 已滚过这张
-    var d = Math.abs(r.top - 60);
-    if(d < bestD){ bestD = d; best = card; }
-  });
-  return best;
 }
 
 function currentHeadingId(cid){
@@ -763,9 +760,10 @@ function currentHeadingId(cid){
   return cur;
 }
 
-function renderTocPanel(card){
-  var cid = card.getAttribute('data-id');
-  var nameEl = card.querySelector('.name');
+// 渲染「某一张卡片」的目录 —— 内容随点击的卡片动态变化
+function renderTocPanel(cid){
+  var card = document.querySelector('#card-' + cssId(cid));
+  var nameEl = card ? card.querySelector('.name') : null;
   var name = nameEl ? nameEl.textContent.trim() : '';
   document.getElementById('tocHead').textContent = name ? ('目录 · ' + name) : '目录';
   var cur = currentHeadingId(cid);
@@ -788,41 +786,104 @@ function tocJump(hid, detKey){
       el.scrollIntoView({behavior:'smooth', block:'start'});
     });
   }
-  document.getElementById('tocPanel').classList.remove('on');
+  // 跳转后自动收起浮层、不遮挡正文；目录按钮常驻，需要时点开
+  var panel = document.getElementById('tocPanel');
+  if(panel) panel.classList.remove('on');
 }
 
-function updateTocFab(){
-  var card = activeTocCard();
+function closeToc(){
   var fab = document.getElementById('tocFab');
-  if(fab) fab.classList.toggle('on', !!card);
   var panel = document.getElementById('tocPanel');
-  if(!card){ if(panel) panel.classList.remove('on'); return; }
-  if(panel && panel.classList.contains('on')) renderTocPanel(card);
+  if(fab) fab.classList.remove('on');
+  if(panel) panel.classList.remove('on');
+  var pg = document.getElementById('readProgress');
+  if(pg) pg.style.display = 'none';
+  _tocCid = '';
+  _tocCard = null;
 }
 
-document.getElementById('tocFab').addEventListener('click', function(){
+// 悬浮目录控件定位到某张卡片的笔记框右上角（不是跟随点击位置，避免遮正文）
+function positionToc(card){
+  var fab = document.getElementById('tocFab');
+  var nb = card.querySelector('.note-box');
+  var r = (nb || card).getBoundingClientRect();
+  fab.style.left = Math.max(8, r.right - 66) + 'px';
+  fab.style.top  = Math.max(8, r.top + 8) + 'px';
+  // 面板锚定到按钮下方，右缘与卡片笔记框右缘对齐
   var panel = document.getElementById('tocPanel');
-  if(panel.classList.contains('on')){ panel.classList.remove('on'); return; }
-  var card = activeTocCard();
-  if(!card) return;
-  renderTocPanel(card);
-  panel.classList.add('on');
+  var pw = panel.offsetWidth || 304, ph = panel.offsetHeight || 300;
+  var plc = function(v){ return Math.max(8, Math.min(v, window.innerWidth - pw - 8)); };
+  var ptc = function(v){ return Math.max(8, Math.min(v, window.innerHeight - ph - 8)); };
+  panel.style.left = plc(r.right - pw) + 'px';
+  panel.style.top  = ptc(r.top + 34) + 'px';
+}
+
+// 让悬浮目录跟随"当前卡片"：有章节→浮现并展开；无章节→自动消失
+function setActiveToc(card){
+  var cid = card.getAttribute('data-id');
+  var list = TOC[cid];
+  if(!list || !list.length){ closeToc(); return; }       // 点不需要目录的卡片 → 自动隐藏
+  renderTocPanel(cid);                                    // 点需要目录的卡片 → 自动浮现
+  positionToc(card);
+  _tocCid = cid;
+  _tocCard = card;
+  document.getElementById('tocFab').classList.add('on');
+  document.getElementById('tocPanel').classList.add('on');
+  updateFabLabel(cid);
+  updateReadProgress(card);
+  document.getElementById('readProgress').style.display = 'block';
+}
+
+// 当前小节名：把目录按钮当"章节胶囊"，标题实时显示"目录 · 正在读的小节"
+function updateFabLabel(cid){
+  var fab = document.getElementById('tocFab');
+  var list = TOC[cid] || [], name = '';
+  var id = currentHeadingId(cid);
+  for(var i = 0; i < list.length; i++) if(list[i].id === id){ name = list[i].text; break; }
+  fab.textContent = name ? ('目录 · ' + name) : '目录';
+  fab.title = '当前小节 · 点开可看全部目录';
+}
+
+// 阅读进度：按"当前卡片笔记框"滚过视口的位置算顶栏细进度条（0→1 随内容推进）
+function updateReadProgress(card){
+  var nb = card && card.querySelector('.note-box');
+  if(!nb) return;
+  var vh = window.innerHeight;
+  var r = nb.getBoundingClientRect();
+  var range = (r.height || 1) + vh;                       // 笔记完整滚过视口的距离
+  var ratio = Math.max(0, Math.min(1, (vh - r.top) / range));
+  document.getElementById('readProgressBar').style.width = (ratio * 100).toFixed(1) + '%';
+}
+
+// 滚动时：悬浮目录贴住当前卡片 + 章节胶囊与进度条实时更新
+window.addEventListener('scroll', function(){
+  if(_tocCard && document.getElementById('tocFab').classList.contains('on')){
+    positionToc(_tocCard);
+    updateFabLabel(_tocCid);
+    updateReadProgress(_tocCard);
+  }
+}, {capture:true, passive:true});
+
+// 目录按钮：点它收起/再点展开面板（按钮本身保持，可随时再启用）
+document.getElementById('tocFab').addEventListener('click', function(e){
+  e.preventDefault(); e.stopPropagation();
+  document.getElementById('tocPanel').classList.toggle('on');
 });
+
+// 点目录条目 → 跳转，面板保持打开，方便连续导航
 document.getElementById('tocList').addEventListener('click', function(e){
   var a = e.target && e.target.closest ? e.target.closest('a[data-h]') : null;
   if(a) tocJump(a.getAttribute('data-h'), a.getAttribute('data-det'));
 });
-document.addEventListener('click', function(e){                 // 点面板外收起
-  var panel = document.getElementById('tocPanel');
-  if(!panel.classList.contains('on')) return;
+
+// 点卡片 → 该卡变成"当前卡片"，目录随之浮现/消失
+document.getElementById('wrap').addEventListener('click', function(e){
   var t = e.target;
-  if(t && t.closest && (t.closest('#tocPanel') || t.closest('#tocFab'))) return;
-  panel.classList.remove('on');
-}, true);
-window.addEventListener('scroll', function(){
-  if(_tocRaf) return;
-  _tocRaf = requestAnimationFrame(function(){ _tocRaf = 0; updateTocFab(); });
-}, {passive:true});
+  if(t && t.closest && (t.closest('#tocFab') || t.closest('#tocPanel'))) return;
+  var card = e.target && e.target.closest ? e.target.closest('.card') : null;
+  if(!card) return;
+  setActiveToc(card);
+});
 
 loadFacets();
 load();
