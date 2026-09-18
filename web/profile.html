@@ -94,7 +94,7 @@
   <div class="ovline" id="ovline"></div>
 </section>
 
-<section class="card">
+<section class="card" id="dirCard" hidden>
   <div class="sec-h">你偏的方向</div>
   <div class="mini">按收藏数量排序，点一下看对应卡片</div>
   <div id="domains"></div>
@@ -103,14 +103,14 @@
   <div class="chips" id="techs"></div>
 </section>
 
-<section class="card">
+<section class="card" id="splitCard" hidden>
   <div class="sec-h">生产端 ↔ 认知端</div>
   <div class="mini">你在「做」的（仓库）和你在「学」的（视频等），各占多少</div>
   <div class="split" id="split"></div>
   <div class="sleg" id="sleg"></div>
 </section>
 
-<section class="card">
+<section class="card" id="rhythmCard" hidden>
   <div class="sec-h">收藏节奏</div>
   <div class="mini" id="span-note"></div>
   <div class="tl" id="timeline"></div>
@@ -118,31 +118,31 @@
   <div class="slots" id="slots"></div>
 </section>
 
-<details class="more">
+<details class="more" id="moreCard" hidden>
   <summary>更多维度</summary>
 
-  <div class="mblk">
+  <div class="mblk" id="blk-maturity">
     <div class="mh">仓库量级 <em>项目的江湖地位，不等于你用得多</em></div>
     <div id="maturity"></div>
   </div>
 
-  <div class="mblk">
+  <div class="mblk" id="blk-sources">
     <div class="mh">怎么进来的 <em>自己找的 / 别人推的</em></div>
     <div class="chips" id="sources"></div>
   </div>
 
-  <div class="mblk">
+  <div class="mblk" id="blk-motive">
     <div class="mh">收藏动机 <em>带着目的找 / 随手刷到</em></div>
     <div class="chips" id="motive"></div>
   </div>
 
-  <div class="mblk">
+  <div class="mblk" id="blk-feedback">
     <div class="mh">你的反馈 <em>这一页只有它是记录，不是推断</em></div>
     <div class="chips" id="feedback"></div>
     <div class="mini mt" id="fb-note"></div>
   </div>
 
-  <div class="mblk">
+  <div class="mblk" id="blk-gaps">
     <div class="mh">行为上的缺角 <em>弱观察，非结论</em></div>
     <div id="gaps"></div>
   </div>
@@ -158,6 +158,14 @@ async function load(){
   let p;
   try { p = await (await fetch('/api/profile')).json(); }
   catch(e){ $('ov').innerHTML = '<div class="empty">加载失败，请确认服务在运行。</div>'; return; }
+
+  // 一条都没有：整页收敛成一句话，不再铺一排"暂无"空壳
+  if(!p.total){
+    $('ov').innerHTML = '';
+    $('ovline').innerHTML = '<div class="empty" style="text-align:left;padding:6px 2px">还没有收藏。去收几个（GitHub 仓库 / 视频等），这里就开始长东西。</div>';
+    ['dirCard','splitCard','rhythmCard','moreCard'].forEach(function(id){ $(id).hidden = true; });
+    return;
+  }
 
   // ── 概览：一排数字 + 一句动态小结 ──
   const spanDays = p.span ? p.span.days : 0;
@@ -256,6 +264,17 @@ async function load(){
     '<div class="gap jp" data-jump="domain" data-v="'+escAttr(g.to)+'"><div class="t">'+g.from+' → '+g.to+'</div>'+
     '<div class="h">'+g.hint+'</div></div>').join('')
     : '<div class="empty">暂无明显缺角观察（收藏还不够多，或已较均衡）。</div>';
+
+  // ── 板块按数据出现：没数据就不占空壳 ──
+  $('dirCard').hidden = !(p.domains.length || (p.techs && p.techs.length));
+  $('splitCard').hidden = !ktot;
+  $('rhythmCard').hidden = !(p.timeline_days.length || Object.keys(p.active_slots||{}).length);
+  $('blk-maturity').hidden = !p.maturity.length;
+  $('blk-sources').hidden = !skeys.length;
+  $('blk-motive').hidden = !mkeys.length;
+  $('blk-feedback').hidden = !fb.length;
+  $('blk-gaps').hidden = !p.gaps.length;
+  $('moreCard').hidden = !(p.maturity.length || skeys.length || mkeys.length || fb.length || p.gaps.length);
 }
 
 // 钻取：画像上的可点项跳转到卡片页对应筛选

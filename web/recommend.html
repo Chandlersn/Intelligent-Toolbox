@@ -159,13 +159,16 @@ function trendRowHTML(r, i){
 function renderTrending(){
   var box = document.getElementById('trendList');
   var sub = document.getElementById('trendSub');
+  var note = document.getElementById('reloadNote');
   fetch('/api/trending').then(function(r){return r.json()}).then(function(d){
     var repos = d.repos || [];
     if(!repos.length){
-      box.innerHTML = '<div class="fail">暂时拿不到本周趋势（可能网络受限），稍后刷新看看。</div>';
-      if(sub) sub.textContent = '获取失败 · 与你的收藏无关';
+      // 趋势没数据时不铺"拿不到"空壳盒，整个板块藏起来，留一句话带过
+      document.getElementById('trendBox').hidden = true;
+      if(note) note.textContent = '本周趋势暂时拿不到（可能网络受限），稍后刷新看看。';
       return;
     }
+    document.getElementById('trendBox').hidden = false;
     box.innerHTML = repos.map(trendRowHTML).join('');
     box.querySelectorAll('.abtn').forEach(function(b){
       if(b.getAttribute('data-view')){
@@ -176,7 +179,8 @@ function renderTrending(){
     });
     if(sub) sub.textContent = '共 '+repos.length+' 个 · 全球趋势 · 与你的收藏无关';
   }).catch(function(){
-    box.innerHTML = '<div class="fail">加载失败，确认服务在运行。</div>';
+    document.getElementById('trendBox').hidden = true;
+    if(note) note.textContent = '趋势拉取失败，确认服务在运行。';
   });
 }
 
