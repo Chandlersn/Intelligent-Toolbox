@@ -78,7 +78,7 @@ class TestHttp(Base):
     def test_every_page_is_reachable(self):
         """页面清单是目录级 serve，新增页面不需要改后端 —— 这条锁住这一点。"""
         for page in ("collect.html", "cards.html", "map.html", "recommend.html",
-                     "profile.html", "share.html", "host.html", "embed.html",
+                     "profile.html", "settings.html", "host.html", "embed.html",
                      "ball-demo.html", "ball.js"):
             code, _, _ = self.req("GET", "/" + page)
             self.assertEqual(code, 200, page + " 不可达")

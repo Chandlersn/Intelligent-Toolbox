@@ -29,6 +29,14 @@
     margin-right:6px;vertical-align:-1px}
   .opt.on .sw{border-color:currentColor}
 
+  .inp{width:100%;box-sizing:border-box;background:var(--surface-2);border:1px solid var(--line);
+    color:var(--ink);border-radius:var(--r);padding:9px 11px;font-size:13px;font-family:inherit;
+    transition:border-color .12s var(--ease)}
+  .inp:focus{outline:none;border-color:var(--accent);background:var(--surface)}
+  .row-flex{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink);cursor:pointer}
+  .row-flex input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+  .opt-hint{color:var(--faint);font-weight:400}
+
   .abtn{width:100%;margin-top:2px}
   .split{height:1px;background:var(--line-soft);margin:14px 0}
 
@@ -105,7 +113,29 @@
 
   <section class="sec">
     <div class="sec-h">模型与能力</div>
-    <p class="sec-d">只读：配置当前走启动时的环境变量，重启服务后改环境变量即可调整。</p>
+    <p class="sec-d">在这配好模型，收藏箱就内建 AI 分析，不再依赖外部脚本。留空则回到「仅本地规则」。</p>
+
+    <div class="g">
+      <div class="gk">启用</div>
+      <label class="row-flex"><input type="checkbox" id="llmEnable"><span>启用内置远程模型（OpenAI 兼容接口）</span></label>
+    </div>
+    <div class="g">
+      <div class="gk">接口地址 <span class="opt-hint">Base URL，如 https://api.openai.com/v1</span></div>
+      <input class="inp" id="llmBase" placeholder="https://api.openai.com/v1" spellcheck="false">
+    </div>
+    <div class="g">
+      <div class="gk">API Key <span class="opt-hint">本地无鉴权服务可留空</span></div>
+      <input class="inp" id="llmKey" type="password" placeholder="sk-..." autocomplete="off">
+    </div>
+    <div class="g">
+      <div class="gk">模型名 <span class="opt-hint">如 gpt-4o-mini / deepseek-chat</span></div>
+      <input class="inp" id="llmModel" placeholder="gpt-4o-mini" spellcheck="false">
+    </div>
+    <button class="abtn" id="saveLLM">保存模型设置</button>
+    <div class="msg" id="llmMsg"></div>
+
+    <div class="split"></div>
+    <div class="sec-h" style="font-size:13px">当前能力状态</div>
     <div id="infoRows"><div class="msg">读取中…</div></div>
   </section>
 
@@ -164,17 +194,29 @@ document.getElementById('resetAppearance').addEventListener('click', function(){
   note('已恢复默认观感。','ok');
 });
 
-// ---- 模型与能力：只读展示 /api/doctor ----
+// ---- 模型与能力：可编辑配置 + 当前状态 ----
+var llmMsg=document.getElementById('llmMsg');
+function lnote(t,cls){ llmMsg.className='msg '+(cls||''); llmMsg.textContent=t; }
+
 function pill(on,label){ return '<span class="pill-st '+(on?'on':'off')+'">'+esc(label)+'</span>'; }
 function infoRow(k,v,off){ return '<div class="row-info"><span class="k">'+esc(k)+'</span>'+
   (String(v).indexOf('pill-st')>=0 ? '<span class="v">'+v+'</span>' : '<span class="v'+(off?' off':'')+'">'+v+'</span>')+'</div>'; }
 function fmtSize(n){ n=n||0; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
 
-fetch('/api/doctor').then(function(r){return r.json()}).then(function(d){
+var backendName={builtin_remote:'内置远程模型',lantern:'灯笼模块',off:'未启用'};
+function renderStatus(d){
   var llm=d.llm||{}, t=d.transcribe||{}, g=d.github||{}, db=d.db||{};
   var rows=
     infoRow('模型 / LLM', pill(!!llm.available, llm.available?'可用':'未启用'))+
-    infoRow('LLM 模块', llm.root||'—')+
+    infoRow('当前后端', esc(backendName[llm.backend]||'未启用'), !llm.available);
+  if(llm.backend==='builtin_remote'){
+    rows+= infoRow('接口地址', esc(llm.base_url||'—'), !llm.base_url)+
+           infoRow('模型名', esc(llm.model||'—'), !llm.model)+
+           infoRow('API Key', pill(!!llm.has_key, llm.has_key?'已配置':'未配置'));
+  } else if(llm.backend==='lantern'){
+    rows+= infoRow('复用模块', esc(llm.root||'—'));
+  }
+  rows+=
     infoRow('GitHub Token', pill(!!g.token, g.token?'已配置':'未配置'))+
     infoRow('转写就绪', pill(!!t.ready, t.ready?'就绪':'缺依赖'), !t.ready)+
     infoRow('转写模型', (t.whisper_model||'—'))+
@@ -182,9 +224,51 @@ fetch('/api/doctor').then(function(r){return r.json()}).then(function(d){
     infoRow('数据库', (db.path||'—'))+
     (db.size!=null ? infoRow('DB 大小', fmtSize(db.size)) : '');
   document.getElementById('infoRows').innerHTML=rows;
-}).catch(function(){
-  document.getElementById('infoRows').innerHTML='<div class="msg err">读不到服务状态，确认服务在运行。</div>';
+}
+function refreshStatus(){
+  fetch('/api/doctor').then(function(r){return r.json()}).then(function(d){
+    renderStatus(d);
+  }).catch(function(){
+    document.getElementById('infoRows').innerHTML='<div class="msg err">读不到服务状态，确认服务在运行。</div>';
+  });
+}
+
+var llmEnable=document.getElementById('llmEnable'),
+    llmBase=document.getElementById('llmBase'),
+    llmKey=document.getElementById('llmKey'),
+    llmModel=document.getElementById('llmModel');
+
+// 回填当前配置（key 打码）
+fetch('/api/settings').then(function(r){return r.json()}).then(function(d){
+  var s=d.llm||{};
+  llmEnable.checked=!!s.enable;
+  llmBase.value=s.base_url||'';
+  llmKey.value=s.api_key||'';
+  llmModel.value=s.model||'';
+}).catch(function(){ lnote('读不到设置，确认服务在运行。','err'); });
+
+document.getElementById('saveLLM').addEventListener('click', function(){
+  fetch('/api/settings', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      llm:{ enable:llmEnable.checked, base_url:llmBase.value.trim(),
+            api_key:llmKey.value.trim(), model:llmModel.value.trim() }
+    })
+  }).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){
+      lnote('已保存。新收藏会用这套模型分析，不可用时自动回到规则。','ok');
+      // 回读打码后的 key，把明文封回输入框
+      fetch('/api/settings').then(function(r){return r.json()}).then(function(s){
+        var v=s.llm||{}; llmKey.value=v.api_key||'';
+        llmEnable.checked=!!v.enable; llmBase.value=v.base_url||''; llmModel.value=v.model||'';
+      }).catch(function(){});
+      refreshStatus();
+    }else{ lnote((d.error||'保存失败'),'err'); }
+  }).catch(function(){ lnote('保存失败：连不上服务。','err'); });
 });
+
+refreshStatus();
 </script>
 </body>
 </html>

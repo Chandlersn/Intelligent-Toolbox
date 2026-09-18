@@ -20,7 +20,8 @@ import config
 # v1 初始 · v2 加 repos.source + 索引 · v3 加 repos.feedback 与 use 轴
 # v4 加 repo_events 表 + repos.last_checked_at（仓库更新检测）
 # v5 加 repos.kind（production/cognition 多源分类）+ repos.raw（原文/逐字稿）
-SCHEMA_VERSION = 5
+# v6 加 app_settings 表（应用内可配置项：内置远程模型）
+SCHEMA_VERSION = 6
 
 
 def connect(path=None):
@@ -50,3 +51,17 @@ def schema_version(conn):
 
 def set_schema_version(conn, v):
     conn.execute("PRAGMA user_version=%d" % int(v))
+
+
+def get_settings(conn, key, default=None):
+    """读 app_settings 单键值。表由 init_db() 幂等创建。"""
+    row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_settings(conn, key, value):
+    """写 app_settings 单键值（upsert）。不 commit，由调用方统一提交。"""
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value))

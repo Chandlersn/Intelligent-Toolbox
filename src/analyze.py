@@ -21,9 +21,10 @@ import json
 import datetime
 
 import config
+import db
+import llm_client
 
-# 灯笼项目根（复用其 llm 模块，不拷 key 到收藏箱）。
-# 由 REPO_LLM_ROOT 覆盖；import 失败 / 未配置 key 即走规则分支。
+# 内置远程模型优先；灯笼模块作为回退（未在本应用内配置模型时复用）。
 LANTERN_ROOT = config.LLM_ROOT
 LLM_MODE = {"module": None, "tried": False}
 
@@ -44,18 +45,43 @@ def _load_llm():
     return LLM_MODE["module"]
 
 
+def _llm_ready():
+    """是否至少有一种可用后端（内置远程模型 或 灯笼模块）。
+
+    各 LLM 调用点在动手前用它判断要不要走规则分支。
+    _llm_chat 才真正决定走哪条后端，这里只管「有没有得用」。
+    """
+    return llm_client.configured() or _load_llm() is not None
+
+
 def llm_status():
-    """给 /api/doctor 用：当前 LLM 是否可用、复用的模块在哪、上游熔断状态。
+    """给 /api/doctor 用：当前 LLM 是否可用、走哪条后端、复用的模块/上游熔断。
 
     只报告事实，不做降级决策 —— 降级是各调用点自己的事。
     """
-    mod = _load_llm()
-    st = {"root": LANTERN_ROOT, "module_loaded": bool(mod), "available": bool(mod)}
-    if mod is not None and hasattr(mod, "breaker_state"):
-        try:
-            st["breaker"] = mod.breaker_state()
-        except Exception:
-            pass
+    use_remote = llm_client.configured()
+    mod = _load_llm() if not use_remote else None
+    st = {
+        "root": LANTERN_ROOT,
+        "module_loaded": bool(mod),
+        "available": bool(use_remote or mod),
+        "backend": "builtin_remote" if use_remote else ("lantern" if mod else "off"),
+    }
+    if use_remote:
+        conn = db.connect()
+        st["base_url"] = db.get_settings(conn, "llm_base_url") or ""
+        st["model"] = db.get_settings(conn, "llm_model") or ""
+        st["has_key"] = bool(db.get_settings(conn, "llm_api_key"))
+        conn.close()
+    else:
+        st["base_url"] = None
+        st["model"] = None
+        st["has_key"] = None
+        if mod is not None and hasattr(mod, "breaker_state"):
+            try:
+                st["breaker"] = mod.breaker_state()
+            except Exception:
+                pass
     return st
 
 
@@ -69,7 +95,13 @@ def _llm_chat(system, user, timeout=None, retries=None, max_tokens=None, use_cac
     max_tokens/use_cache：llm.chat 默认 max_tokens=600，长输出（如逐字稿结构化笔记）
     会被从中间硬截断 —— 需要长输出的调用点必须显式调大。另外 llm.chat 的缓存 key
     不含 max_tokens，改大后必须 use_cache=False，否则会命中旧的截断结果。
+
+    优先级：内置远程模型（本应用内配置）> 灯笼模块回退 > None。
     """
+    # ① 配置了内置远程模型 → 用它。失败/空输出同样返回 None（降级到规则）。
+    if llm_client.configured():
+        return llm_client.chat(system, user, timeout=timeout, max_tokens=max_tokens)
+    # ② 否则回退灯笼模块。
     llm_mod = _load_llm()
     if llm_mod is None:
         return None
@@ -125,8 +157,7 @@ def _llm_card(meta, note, item_id, conn, timeout=None, retries=None, kind="produ
     kind='production' → 仓库视角（GitHub 元数据）；kind='cognition' → 内容视角
     （抖音/文章，标题/简介/逐字稿）。两者共用同一份领域白名单与卡片结构。
     """
-    llm_mod = _load_llm()
-    if llm_mod is None:
+    if not _llm_ready():
         return None, False
     # 已有收藏的轻量上下文：用 domain 轴让分析带一点个性化（只发领域名，不出行为明细）
     ctx = ""
@@ -253,8 +284,7 @@ def _llm_recommend_insight(profile_text):
     注意：LLM 只负责语义层的「推领域+理由+置信度」，真实仓库仍由 GitHub 搜索补全，
     避免模型编造不存在的仓库地址。confidence 标注样本稀疏时的可信度，防误导。
     """
-    llm_mod = _load_llm()
-    if llm_mod is None:
+    if not _llm_ready():
         return None
     if not profile_text or not profile_text.strip():
         return None
@@ -590,8 +620,7 @@ def _llm_related(cur_name, cur_desc, cur_tags, cur_note, candidates,
     比 detect_related 的硬标签匹配更智能：能发现跨领域的语义关联
     （如「插件市场型 CLI」与「自动化工作流」虽领域不同但语义相邻）。
     """
-    llm_mod = _load_llm()
-    if llm_mod is None or not candidates:
+    if not _llm_ready() or not candidates:
         return None
     cand_txt = []
     for c in candidates[:20]:  # 控制 prompt 体量
@@ -638,8 +667,7 @@ def _llm_note_axes(note, meta):
     scene：典型使用场景（如「做项目」「学习研究」「日常效率」「调研选型」）
     比 sync_axes 里硬关键词映射更准——真正读懂用户的话。
     """
-    llm_mod = _load_llm()
-    if llm_mod is None or not note or not note.strip():
+    if not _llm_ready() or not note or not note.strip():
         return None
     name = (meta or {}).get("name") or (meta or {}).get("full_name") or ""
     desc = (meta or {}).get("description") or ""

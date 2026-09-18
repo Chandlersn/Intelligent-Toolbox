@@ -131,6 +131,12 @@ def init_db():
             PRIMARY KEY (repo_id, tag)
         )"""
     )
+    # 应用内可配置项（模型/外观等），不靠环境变量，随库持久化。
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY, value TEXT
+        )"""
+    )
     # 多轴查询是核心路径，按轴取值建索引（否则每次筛选都全表扫）
     c.execute("CREATE INDEX IF NOT EXISTS idx_repo_axis_key_value ON repo_axis (axis_key, value)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_repo_axis_repo ON repo_axis (repo_id)")
@@ -1551,6 +1557,52 @@ def doctor():
 # ═══════════════════════════════════════════════════════════════════
 #  静态文件
 # ═══════════════════════════════════════════════════════════════════
+def get_settings_resp():
+    """读 app_settings 返回可编辑的模型配置。api_key 打码（sk-***ab）下发给前端。"""
+    conn = db.connect()
+    api_key = db.get_settings(conn, "llm_api_key") or ""
+    resp = {
+        "ok": True,
+        "llm": {
+            "enable": db.get_settings(conn, "llm_enable", "") == "1",
+            "base_url": db.get_settings(conn, "llm_base_url") or "",
+            "api_key": _mask_key(api_key),
+            "model": db.get_settings(conn, "llm_model") or "",
+            "has_key": bool(api_key),
+        },
+    }
+    conn.close()
+    return resp
+
+
+def _mask_key(k):
+    """打码 api_key：保留头 3 尾 2，中间补 ***。空返回空串。"""
+    k = k or ""
+    if len(k) <= 6:
+        return "***" if k else ""
+    return k[:3] + "***" + k[-2:]
+
+
+def save_settings(payload):
+    """写模型配置到 app_settings。前端回传的掩码 key 不得覆盖真实 key。"""
+    llm = payload.get("llm") or {}
+    conn = db.connect()
+    db.set_settings(conn, "llm_enable", "1" if llm.get("enable") else "0")
+    db.set_settings(conn, "llm_base_url", (llm.get("base_url") or "").strip())
+    db.set_settings(conn, "llm_model", (llm.get("model") or "").strip())
+    new_key = (llm.get("api_key") or "").strip()
+    if new_key:
+        if "***" not in new_key:
+            db.set_settings(conn, "llm_api_key", new_key)
+        # 掩码回传 = 未改 key，保留现有值（不覆盖）
+    else:
+        db.set_settings(conn, "llm_api_key", "")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ═══════════════════════════════════════════════════════════════════
 def resolve_static(rel):
     """把 URL 路径解析成 web/ 下的真实文件；越界或不存在返回 None。
 
@@ -1796,6 +1848,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, get_profile())
         elif path == "/api/doctor":
             self._send(200, doctor())
+        elif path == "/api/settings":
+            self._send(200, get_settings_resp())
         elif path == "/api/updates":
             self._send(200, get_updates())
         else:
@@ -1897,6 +1951,18 @@ class Handler(BaseHTTPRequestHandler):
             n = mark_updates_seen()
             self._send(200, {"ok": True, "seen": n})
             return
+        if p == "/api/settings":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            payload, err = self._read_json()
+            if err != 200:
+                self._send(err, {"ok": False,
+                                 "error": "bad json" if err == 400 else "body too large"})
+                return
+            self._send(200, save_settings(payload))
+            return
         if p != "/collect":
             self._send(404, {"error": "not found"})
             return
@@ -1920,6 +1986,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"ok": False, "error": "请提供仓库地址，或在 text 中附上链接"})
             return
         self._send(*collect_payload(url, note, source))
+
+    # ---------- PUT ----------
+    # 写操作统一走 do_POST 的路由逻辑；这里的 PUT 只作别名（设置/更新类用 PUT 语义）。
+    def do_PUT(self):
+        self.do_POST()
 
     # ---------- DELETE ----------
     def do_DELETE(self):
