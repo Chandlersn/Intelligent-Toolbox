@@ -108,7 +108,11 @@
     <h2>AI 缺角识别</h2>
     <div id="aiSection" hidden>
       <div class="src-note">当前配置的模型基于你的收藏画像生成：推测你接下来还可能想关注哪类领域 + 为什么。置信度越高越可信。</div>
-      <div id="aiGaps"><div class="empty">生成中…</div></div>
+      <div id="aiGaps">
+        <div class="sk" style="height:14px;width:86%;margin:6px 0 10px"></div>
+        <div class="sk" style="height:13px;width:66%;margin-bottom:10px"></div>
+        <div class="sk" style="height:13px;width:72%"></div>
+      </div>
       <button class="btn ai-refresh" id="btn-ai-refresh">重新生成</button>
     </div>
     <div class="note">关联边表示仓库间的领域 / 标签关系。缺角仅供参考，不代表你一定需要。</div>
@@ -567,7 +571,10 @@ function loadAiGaps(){
   }).catch(()=>{ box.hidden = true; });
 }
 document.getElementById("btn-ai-refresh").onclick = function(){
-  document.getElementById("aiGaps").innerHTML = '<div class="empty">生成中…</div>';
+  document.getElementById("aiGaps").innerHTML =
+    '<div class="sk" style="height:14px;width:86%;margin:6px 0 10px"></div>'+
+    '<div class="sk" style="height:13px;width:66%;margin-bottom:10px"></div>'+
+    '<div class="sk" style="height:13px;width:72%"></div>';
   fetch("/api/graph/gaps?refresh=1").then(r=>r.json()).then(d=>{
     const box = document.getElementById("aiSection"), list = document.getElementById("aiGaps");
     if(d.source !== "llm" || !d.gaps.length){ box.hidden = true; return; }

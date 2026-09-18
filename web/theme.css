@@ -169,6 +169,13 @@ h1{font-size:20px;letter-spacing:.2px}
 /* ---------- 空状态（有教育意义，弱化） ---------- */
 .empty{color:var(--muted);text-align:center;padding:40px 0;font-size:14px}
 
+/* ---------- 骨架屏：数据加载前占位，形状贴合真实布局 ---------- */
+.sk{position:relative;overflow:hidden;background:var(--line-soft);border-radius:var(--r-sm)}
+.sk::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);
+  animation:sk 1.3s ease infinite}
+@keyframes sk{to{transform:translateX(100%)}}
+
 /* ---------- 仓库更新反馈条（顶部，可关闭） ---------- */
 .upd-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   background:var(--accent-dim);border-bottom:1px solid var(--accent-line);
