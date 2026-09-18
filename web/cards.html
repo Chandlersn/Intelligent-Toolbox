@@ -36,10 +36,12 @@
   .share-acts{display:flex; gap:8px; margin-top:10px; flex-wrap:wrap}
   .share-note{font-size:12px; color:var(--muted); margin-top:10px; line-height:1.5}
 
-  /* ===== 卡片操作区：主行动（用过/弃了/还想用）+ 一个「更多」菜单收次要动作 ===== */
+  /* ===== 卡片操作区：分享 / 重算 / 删除 平铺，删除红色 ===== */
   .card{position:relative}
   .card.lift{z-index:41}
   .card .acts{justify-content:flex-start}
+  /* 删除是破坏性操作：从「更多」菜单提出来平铺时，保持红色，覆盖主题里 .abtn 的默认色 */
+  .card .acts .abtn.del,.card .acts .abtn.del:hover{color:var(--err)}
   .card .name .ext{color:var(--faint); font-size:12px; margin-left:2px}
   .more{position:relative; margin-left:auto}
   .more>summary{list-style:none; display:inline-flex; align-items:center; gap:6px;
@@ -84,8 +86,6 @@
   .fbar .clear:hover{color:var(--accent); opacity:1}
   .fbar .clear[hidden]{display:none}
   .res-cnt{margin-top:15px; font-size:12px; color:var(--faint)}
-  /* 使用反馈选中态：沿用主题强调色，不另立配色 */
-  .abtn.fb-on{color:var(--accent-ink); background:var(--accent); border-color:var(--accent)}
   .res-hint{margin-top:10px; font-size:13px; color:var(--muted); line-height:1.6}
   .res-hint a{color:var(--accent); cursor:pointer; text-decoration:underline}
   /* 类型徽标：生产端（仓库）中性、认知端（抖音等）语义绿，沿用主题变量 */
@@ -374,18 +374,10 @@ function cardHTML(it){
     rawTxt+
     terrTxt+
     (rel?'<div class="rel"><div class="k">关联节点</div>'+rel+'</div>':'')+
-    '<div class="row"><div class="k">后来怎么样了（只有你知道，不靠推测）</div>'+
-      '<div class="acts">'+
-      '<button class="abtn muted'+(it.feedback==='used'?' fb-on':'')+'" data-act="fb" data-fb="used" data-id="'+it.id+'">用过</button>'+
-      '<button class="abtn muted'+(it.feedback==='dropped'?' fb-on':'')+'" data-act="fb" data-fb="dropped" data-id="'+it.id+'">弃了</button>'+
-      '<button class="abtn muted'+(it.feedback==='want'?' fb-on':'')+'" data-act="fb" data-fb="want" data-id="'+it.id+'">还想用</button>'+
-      '<details class="more"><summary aria-label="更多操作">更多</summary>'+
-        '<div class="menu">'+
-          '<button class="abtn" data-act="share" data-id="'+it.id+'">分享卡片</button>'+
-          '<button class="abtn" data-act="regen" data-id="'+it.id+'">重算</button>'+
-          '<button class="abtn del" data-act="del" data-id="'+it.id+'">删除</button>'+
-        '</div>'+
-      '</details>'+
+    '<div class="row"><div class="acts">'+
+      '<button class="abtn" data-act="share" data-id="'+it.id+'">分享卡片</button>'+
+      '<button class="abtn" data-act="regen" data-id="'+it.id+'">重算</button>'+
+      '<button class="abtn del" data-act="del" data-id="'+it.id+'">删除</button>'+
       '</div></div>'+
   '</div>';
 }
@@ -557,7 +549,6 @@ function render(items){
       var id=b.getAttribute('data-id');
       if(act==='del'){ closeMenu(b); onDelete(b, id); return; }
       if(act==='share'){ closeMenu(b); onShare(id); return; }
-      if(act==='fb'){ closeMenu(b); onFeedback(b, id, b.getAttribute('data-fb')); return; }
       // regen：标记该卡正在重算，期间轮询不整页重建；带超时，失败/超时保留原卡片并提示
       if(REGEN[id]) return; // 已在重算中，防止连点
       REGEN[id]=true;
@@ -637,18 +628,7 @@ function maybeFocus(){
   focusCard(id);
 }
 
-// 使用反馈：用过 / 弃了 / 还想用（再点一次同一个值 = 取消）
-function onFeedback(btn, id, fb){
-  fetch('/api/item/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({id:id, feedback:fb})})
-    .then(function(r){return r.json()})
-    .then(function(d){
-      if(d && d.ok){ toast(d.feedback ? '已记下：' + fbName(fb) : '已取消标记'); load(); }
-      else { toast('没记上：' + ((d && d.error) || '')); }
-    })
-    .catch(function(){ toast('没记上，确认服务在运行'); });
-}
-function fbName(k){ return k==='used' ? '用过' : (k==='dropped' ? '弃了' : '还想用'); }
+// 备注：保留反馈相关 API 以兼容画像页的「你的反馈」统计；卡片页不再设置反馈
 
 function onDelete(btn, id){
   if(!confirm('确定删除这条收藏？关联的图谱、画像数据会同步清除，且不可恢复。')) return;
