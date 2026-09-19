@@ -704,5 +704,39 @@ class TestUpdates(Base):
         self.assertEqual(server.get_updates()["count"], 0)
 
 
+class TestBindAddr(unittest.TestCase):
+    """监听地址必须与 socket 家族匹配。
+
+    背景：address_family 曾写死成 AF_INET6，于是 REPO_HOST=127.0.0.1 一启动就
+    getaddrinfo failed —— 而回环地址正是安全提示里建议用户改成的那个值。
+    """
+
+    def _addr(self, host):
+        old = config.HOST
+        config.HOST = host
+        try:
+            return server.bind_addr()
+        finally:
+            config.HOST = old
+
+    def test_wildcard_listens_dual_stack(self):
+        import socket
+        host, fam = self._addr("0.0.0.0")
+        self.assertEqual(host, "::", "通配地址要落到 :: 才能同时收 v4/v6")
+        self.assertEqual(fam, socket.AF_INET6)
+
+    def test_explicit_ipv4_stays_ipv4(self):
+        import socket
+        host, fam = self._addr("127.0.0.1")
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(fam, socket.AF_INET, "显式 IPv4 用 AF_INET6 会直接 bind 失败")
+
+    def test_explicit_ipv6(self):
+        import socket
+        host, fam = self._addr("::1")
+        self.assertEqual(host, "::1")
+        self.assertEqual(fam, socket.AF_INET6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

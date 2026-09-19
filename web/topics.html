@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>收藏箱 · 主题</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  html,body{ margin:0; padding:0; }
+  header{ padding:18px 20px 12px; border-bottom:1px solid var(--line); }
+  header h1{ margin:0; font-size:19px; font-weight:600; letter-spacing:.5px; }
+  header .sub{ margin-top:6px; font-size:13px; color:var(--muted); line-height:1.65; }
+  .bar{ display:flex; align-items:center; gap:14px; padding:14px 20px 4px;
+    max-width:760px; margin:0 auto; }
+  .bar .hint{ flex:1; font-size:12px; color:var(--muted); line-height:1.65; }
+  .bar .hint b{ color:var(--accent); font-weight:600; }
+  .btn{ font-size:12px; color:var(--muted); background:var(--surface);
+    border:1px solid var(--line); border-radius:999px; padding:6px 14px; cursor:pointer;
+    font-family:inherit; flex:none; }
+  .btn:hover{ color:var(--ink); border-color:var(--faint); }
+  .btn.primary{ color:var(--accent); border-color:var(--accent-line); background:var(--accent-dim); }
+  .btn[disabled]{ opacity:.55; cursor:default; }
+  main{ max-width:760px; margin:0 auto; padding:10px 20px 96px; }
+
+  .tp{ background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    padding:15px 17px; margin-bottom:12px; }
+  .tp-h{ display:flex; align-items:center; gap:9px; }
+  .tp-h h3{ margin:0; font-size:15.5px; font-weight:600; color:var(--ink); flex:1;
+    line-height:1.4; }
+  .tp-badge{ font-size:11px; border-radius:20px; padding:1px 9px; border:1px solid var(--line);
+    color:var(--faint); flex:none; white-space:nowrap; }
+  .tp-badge.confirm{ color:var(--accent); border-color:var(--accent-line); }
+  .tp-sum{ font-size:13px; color:var(--muted); line-height:1.75; margin-top:8px; }
+  .tp-meta{ font-size:11.5px; color:var(--faint); margin-top:9px; }
+  .tp-lb{ font-size:11px; color:var(--faint); margin-top:12px; letter-spacing:.6px; }
+  .tp-gaps{ margin-top:6px; display:flex; flex-direction:column; gap:6px; }
+  .tp-gap{ font-size:12.5px; color:var(--muted); line-height:1.65;
+    padding-left:10px; border-left:2px solid var(--accent-line); }
+  .tp-items{ list-style:none; margin:6px 0 0; padding:0;
+    display:flex; flex-direction:column; gap:5px; }
+  .tp-items li{ font-size:12.5px; display:flex; gap:8px; align-items:baseline; }
+  .tp-items .k{ font-size:11px; color:var(--faint); flex:none; width:30px; }
+  .tp-items a{ color:var(--ink); text-decoration:none; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .tp-items a:hover{ color:var(--accent); }
+  .tp-items .dom{ font-size:11px; color:var(--faint); flex:none; }
+  .tp-acts{ margin-top:13px; display:flex; gap:8px; align-items:center; }
+  .empty{ font-size:13px; color:var(--muted); padding:24px 2px; line-height:1.85; }
+  .sk{ background:var(--line-soft); border-radius:6px; }
+</style>
+</head>
+<body data-nav="topics">
+<header>
+  <h1>主题</h1>
+  <div class="sub">把收藏<b>归纳</b>成主题。主题不是领域标签的复述 —— 它由条目互相参照归纳而来，并给出这个主题下还缺什么。</div>
+</header>
+
+<div class="bar">
+  <div class="hint" id="tv-hint"></div>
+  <button class="btn primary" id="btn-build">归纳主题</button>
+</div>
+
+<main id="tv-list">
+  <div class="sk" style="height:15px;width:44%;margin:18px 0 10px"></div>
+  <div class="sk" style="height:13px;width:82%;margin-bottom:10px"></div>
+  <div class="sk" style="height:13px;width:70%"></div>
+</main>
+
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+
+function setHint(d){
+  var h = document.getElementById("tv-hint");
+  var parts = [];
+  if (d && d.built_at){
+    parts.push("上次归纳 " + esc(d.built_at));
+    if (d.total_items) parts.push("覆盖 " + d.covered + "/" + d.total_items + " 条");
+    if (d.stale) parts.push("<b>库里有新条目，主题可能已过期</b>");
+  } else {
+    parts.push("还没有归纳过。");
+  }
+  h.innerHTML = parts.join(" · ");
+}
+
+function topicHTML(t){
+  var kinds = Object.keys(t.kinds || {}).map(function(k){
+    return k + " " + t.kinds[k];
+  }).join(" / ");
+  var meta = t.count + " 条" + (kinds ? (" · " + kinds) : "")
+           + (t.domains && t.domains.length ? (" · 领域：" + t.domains.join("、")) : "");
+  var gaps = (t.gaps || []).map(function(g){
+    return '<div class="tp-gap">' + esc(g) + '</div>';
+  }).join("");
+  var items = (t.items || []).map(function(it){
+    return '<li><span class="k">' + esc(it.label || "") + '</span>'
+         + '<a href="/cards.html" title="' + esc(it.title) + '">' + esc(it.title) + '</a>'
+         + '<span class="dom">' + esc(it.domain || "") + '</span></li>';
+  }).join("");
+  var confirmed = t.status === "confirmed";
+  var badge = confirmed
+    ? '<span class="tp-badge confirm">已确认</span>'
+    : '<span class="tp-badge">模型归纳 · 待确认</span>';
+  var act = confirmed
+    ? '<button class="btn" data-revert="' + t.id + '">撤回确认</button>'
+    : '<button class="btn" data-confirm="' + t.id + '">确认这个主题</button>';
+  return '<article class="tp">'
+    + '<div class="tp-h"><h3>' + esc(t.title) + '</h3>' + badge + '</div>'
+    + (t.summary ? '<div class="tp-sum">' + esc(t.summary) + '</div>' : "")
+    + '<div class="tp-meta">' + esc(meta) + '</div>'
+    + (gaps ? '<div class="tp-lb">覆盖缺口</div><div class="tp-gaps">' + gaps + '</div>' : "")
+    + '<div class="tp-lb">成员条目</div><ul class="tp-items">' + items + '</ul>'
+    + '<div class="tp-acts">' + act + '</div>'
+    + '</article>';
+}
+
+function bindActs(){
+  var box = document.getElementById("tv-list");
+  box.querySelectorAll("[data-confirm]").forEach(function(b){
+    b.onclick = function(){ setStatus(parseInt(b.dataset.confirm, 10), "confirmed"); };
+  });
+  box.querySelectorAll("[data-revert]").forEach(function(b){
+    b.onclick = function(){ setStatus(parseInt(b.dataset.revert, 10), "draft"); };
+  });
+}
+
+function loadTopics(){
+  var box = document.getElementById("tv-list");
+  fetch("/api/topics").then(function(r){ return r.json(); }).then(function(d){
+    setHint(d);
+    var list = d.topics || [];
+    if (!list.length){
+      box.innerHTML = '<div class="empty">'
+        + (d.built_at
+            ? '还没有主题。点右上角「归纳主题」重新归纳一次。'
+            : '还没有归纳过。点右上角「归纳主题」—— 模型会读一遍当前全部条目，归纳出主题并指出每个主题下的覆盖缺口。')
+        + '</div>';
+      return;
+    }
+    box.innerHTML = list.map(topicHTML).join("");
+    bindActs();
+  }).catch(function(){
+    box.innerHTML = '<div class="empty">读不到，确认服务在运行。</div>';
+  });
+}
+
+function setStatus(id, status){
+  fetch("/api/topic/status", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id: id, status: status})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if (d && d.ok) loadTopics();
+    else alert((d && d.msg) || "操作失败");
+  }).catch(function(){ alert("操作失败，确认服务在运行。"); });
+}
+
+var btn = document.getElementById("btn-build");
+btn.onclick = function(){
+  var old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "归纳中…";
+  setHint(null);
+  document.getElementById("tv-hint").innerHTML =
+    "正在归纳：读取全部条目 → 模型归纳主题与缺口。条目多时需要一两分钟。";
+  fetch("/api/topics/rebuild", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"
+  }).then(function(r){ return r.json(); }).then(function(d){
+    btn.disabled = false; btn.textContent = old;
+    if (!d || !d.ok){
+      document.getElementById("tv-hint").innerHTML =
+        '<b>' + esc((d && (d.msg || d.note)) || "归纳失败") + '</b>';
+      loadTopics();
+      return;
+    }
+    if (d.built === false && d.note){
+      document.getElementById("tv-hint").innerHTML = '<b>' + esc(d.note) + '</b>';
+    }
+    loadTopics();
+  }).catch(function(){
+    btn.disabled = false; btn.textContent = old;
+    document.getElementById("tv-hint").innerHTML = '<b>归纳失败，确认服务在运行。</b>';
+  });
+};
+
+loadTopics();
+</script>
+<script src="/nav.js"></script>
+</body>
+</html>

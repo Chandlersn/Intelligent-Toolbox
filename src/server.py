@@ -20,6 +20,7 @@ import hmac
 import json
 import os
 import re
+import socket
 import sqlite3
 import sys
 import threading
@@ -33,6 +34,8 @@ import analyze
 import config
 import db
 import douyin_source
+import lantern
+import topics
 import web_source
 
 # 兼容旧引用（migrate/外部脚本曾 import server.DB / server.PORT）
@@ -137,6 +140,52 @@ def init_db():
             key TEXT PRIMARY KEY, value TEXT
         )"""
     )
+    # 认知端素材 → 灯笼引擎的投递状态（v7）。
+    # 为什么单独一张表而不是给 repos 加列：一条素材的投递有独立生命周期
+    # （待投/已投/失败重试/被跳过），与收藏本身的状态正交；单独存也便于按状态补投。
+    # external_id 用 "collector:<item_id>"，配合引擎侧 external_id+origin 幂等键，
+    # 重试投递不会在灯笼里长出重复碎片。
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS lantern_delivery (
+            item_id INTEGER PRIMARY KEY,
+            state TEXT NOT NULL DEFAULT 'pending',
+            form TEXT,
+            chars INTEGER,
+            external_id TEXT,
+            remote_id INTEGER,
+            attempts INTEGER DEFAULT 0,
+            last_error TEXT,
+            updated_at TEXT
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_lantern_delivery_state ON lantern_delivery (state)")
+    # 主题归纳（v8）：集合级结构 —— 把 N 条条目归纳成 M 个主题。
+    # 与 repos.card.domain 的区别：domain 是逐条独立判定的预定义桶，主题是互相参照
+    # 归纳出来的分组，带覆盖缺口。status=draft（模型产出）→ confirmed（用户确认）；
+    # 重算只替换 draft，已确认的主题不会被一次重算抹掉。
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS topics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            summary TEXT,
+            gaps TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            origin TEXT,
+            signature TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )"""
+    )
+    # 主题 ↔ 条目的多对多。单独一张表而不是往 topics 塞 JSON 数组：
+    # 这样才能从条目反查「这条属于哪些主题」，也不必全表解析 JSON。
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS topic_members (
+            topic_id INTEGER NOT NULL,
+            repo_id INTEGER NOT NULL,
+            PRIMARY KEY (topic_id, repo_id)
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_topic_members_repo ON topic_members (repo_id)")
     # 多轴查询是核心路径，按轴取值建索引（否则每次筛选都全表扫）
     c.execute("CREATE INDEX IF NOT EXISTS idx_repo_axis_key_value ON repo_axis (axis_key, value)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_repo_axis_repo ON repo_axis (repo_id)")
@@ -1127,7 +1176,13 @@ def worker(item_id, url, note, kind, path, source="manual", transcribe_fn=None):
                       (json.dumps(meta, ensure_ascii=False),
                        json.dumps(card, ensure_ascii=False), status, item_id))
         sync_axes(conn, item_id, card, note, meta)   # worker 与 regenerate 共用同一落点
+        if kind in lantern.COGNITION_SOURCES:
+            # 与出卡同一事务登记待投递：杜绝「卡有了但没登记」的漏投；
+            # 真正发包放在提交后的后台线程，引擎慢/离线都不拖累出卡。
+            lantern.mark_pending(c, item_id)
         conn.commit()
+        if kind in lantern.COGNITION_SOURCES:
+            lantern.flush_async()
     except Exception as e:
         # 健壮性：任一环节抛异常都不再让条目「永久卡在 queued」——
         # 改为记录 status='error' 与错误信息，前端能直接看到失败原因。
@@ -1840,6 +1895,18 @@ class Handler(BaseHTTPRequestHandler):
                 "q": (qs.get("q", [""])[0] or "").strip(),
                 "sort": (qs.get("sort", [""])[0] or "").strip(),
             })
+            # 附上「投给灯笼引擎」的投递状态（一次批量查，避免 N+1）：让「投没投出去 /
+            # 失败原因 / 重试次数」在卡片上直接可见，而不是只躺在日志里。
+            if items:
+                conn = db.connect()
+                try:
+                    states = lantern.states_map(conn, [it.get("id") for it in items])
+                finally:
+                    conn.close()
+                for it in items:
+                    st = states.get(it.get("id"))
+                    if st:
+                        it["lantern"] = st
             self._send(200, {"count": len(items), "items": items})
         elif path == "/api/facets":
             f = get_axis_facets()
@@ -1886,6 +1953,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, get_settings_resp())
         elif path == "/api/updates":
             self._send(200, get_updates())
+        elif path == "/api/topics":
+            self._send(200, topics.list_topics())
         else:
             self._send(404, {"error": "not found"})
 
@@ -1948,6 +2017,33 @@ class Handler(BaseHTTPRequestHandler):
             self._drain_body()
             n = reindex_axes()
             self._send(200, {"ok": True, "rebuild": n})
+            return
+        if p == "/api/topics/rebuild":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            self._drain_body()
+            # 归纳是整库 + 一次长 LLM 调用，同步返回（前端会显示"归纳中"）；失败原因
+            # 原样带回，让前端能区分「模型不可用」与「条目太少」。
+            self._send(200, topics.build_topics())
+            return
+        if p == "/api/topic/status":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            payload, err = self._read_json()
+            if err != 200:
+                self._send(err, {"ok": False,
+                                 "error": "bad json" if err == 400 else "body too large"})
+                return
+            try:
+                tid = int(payload.get("id"))
+            except (TypeError, ValueError):
+                self._send(400, {"ok": False, "error": "bad id"})
+                return
+            self._send(200, topics.set_status(tid, payload.get("status")))
             return
         if p == "/api/item/feedback":
             guard = self._write_guard(same_origin_required=True)
@@ -2047,6 +2143,20 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def bind_addr():
+    """算出监听地址与 socket 家族，返回 (host, family)。
+
+    通配地址（0.0.0.0 / ::）走 IPv6 双栈：localhost 在 Windows 上常被解析成 ::1，
+    纯 IPv4 监听会拒绝连接（WebView2 壳踩过这个）。
+    但**显式 IPv4 地址**必须配 AF_INET —— 早先把 address_family 写死成 AF_INET6，
+    导致 REPO_HOST=127.0.0.1 一启动就 getaddrinfo failed，而这个值恰好是安全提示里
+    建议用户改成的那个。
+    """
+    host = "::" if config.HOST in ("0.0.0.0", "::") else config.HOST
+    want_v6 = ":" in host and hasattr(socket, "AF_INET6")
+    return host, (socket.AF_INET6 if want_v6 else socket.AF_INET)
+
+
 def main():
     init_db()
     print("repo collector on http://%s:%d  (db=%s)" % (config.HOST, config.PORT, config.DB))
@@ -2054,9 +2164,30 @@ def main():
     print("  自检：/api/doctor")
     if config.TOKEN:
         print("  口令：已启用（写操作需 X-Collector-Token）")
+    else:
+        # 同源守卫只拦「带 Origin 的浏览器请求」；无 Origin 的裸 HTTP（curl / 局域网脚本）一律放行。
+        # 一旦监听非回环地址，等于向整个局域网开放增删改 —— 必须把后果说明白。
+        if config.HOST not in ("127.0.0.1", "localhost", "::1"):
+            print("  ⚠ 安全：正在监听 %s 且未设口令 —— 局域网内任何人都能访问、增删你的收藏。" % config.HOST)
+            print("    建议：REPO_TOKEN=某随机串 启动，或在手机端 localStorage.setItem('repo_token','同值')。")
     if not config.GITHUB_TOKEN:
         print("  提示：未配置 REPO_GITHUB_TOKEN，GitHub 搜索限速 10 次/分")
-    ThreadingHTTPServer((config.HOST, config.PORT), Handler).serve_forever()
+    # 双栈监听：既响应 127.0.0.1 / localhost(IPv4)，也响应 ::1(localhost 常被解析成 IPv6)。
+    # 否则 WebView2 壳把 localhost 解析到 ::1 时会拒绝连接。
+    bind_host, bind_family = bind_addr()
+
+    class DualStackServer(ThreadingHTTPServer):
+        address_family = bind_family
+
+        def server_bind(self):
+            if self.address_family == socket.AF_INET6:
+                try:
+                    self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)  # 双栈：v6 同时收 v4-mapped
+                except (OSError, AttributeError):
+                    pass
+            super().server_bind()
+
+    DualStackServer((bind_host, config.PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":
