@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>收藏箱 · 探索</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden}
+  body{display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:var(--sans)}
+  /* 主题 / 图谱 切换：一个页面内分段切换，避免工具栏按钮过多 */
+  .seg{flex:none;display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);
+    background:var(--surface)}
+  .seg-btn{border:1px solid var(--line);background:transparent;color:var(--muted);font-size:13px;
+    font-family:inherit;padding:6px 18px;border-radius:999px;cursor:pointer;white-space:nowrap}
+  .seg-btn:hover{color:var(--ink)}
+  .seg-btn.active{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
+  .views{flex:1;position:relative;min-height:0}
+  .vframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--bg)}
+  .vframe[hidden]{display:none}
+</style>
+</head>
+<body data-nav="explore">
+  <nav class="seg" id="seg">
+    <button type="button" class="seg-btn active" data-view="topics">主题</button>
+    <button type="button" class="seg-btn" data-view="map">图谱</button>
+  </nav>
+  <main class="views">
+    <iframe class="vframe" id="f-topics" src="/topics.html" title="主题"></iframe>
+    <iframe class="vframe" id="f-map" src="/map.html" title="图谱" hidden></iframe>
+  </main>
+  <script src="/nav.js"></script>
+  <script>
+  (function () {
+    var btns = document.querySelectorAll(".seg-btn");
+    var frames = {
+      topics: document.getElementById("f-topics"),
+      map: document.getElementById("f-map")
+    };
+    btns.forEach(function (b) {
+      b.addEventListener("click", function () {
+        var v = b.getAttribute("data-view");
+        btns.forEach(function (x) { x.classList.toggle("active", x === b); });
+        for (var k in frames) {
+          if (k === v) frames[k].removeAttribute("hidden");
+          else frames[k].setAttribute("hidden", "");
+        }
+      });
+    });
+  })();
+  </script>
+</body>
+</html>

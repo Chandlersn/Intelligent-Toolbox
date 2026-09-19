@@ -71,7 +71,7 @@
   var PAGES = [
     { key: "collect",   href: "/",                label: "收藏",   short: "收" },
     { key: "cards",     href: "/cards.html",      label: "卡片",   short: "卡" },
-    { key: "map",       href: "/map.html",        label: "图谱",   short: "图" },
+    { key: "explore",   href: "/explore.html",    label: "探索",   short: "索" },
     { key: "recommend", href: "/recommend.html",  label: "推荐",   short: "荐" },
     { key: "profile",   href: "/profile.html",    label: "画像",   short: "像" },
     { key: "settings",  href: "/settings.html",   label: "设置",   short: "设" }
@@ -232,4 +232,93 @@
 
   loadUpdates();
   maybeAutoCheck();
+})();
+
+/* ───────────────────────────────────────────────────────────────
+ * 自绘模态框（替换原生 confirm / alert）：适配观感主题（明暗/主题色/字体/字号）。
+ * 统一注入一个覆盖层 + 居中对话框，按钮区含「取消 / 主操作」，危险操作主按钮用红色。
+ * 暴露：window.showConfirm(opts) -> Promise<boolean>
+ *        window.showAlert(opts)   -> Promise<boolean>
+ * opts: { title, message, confirmText, cancelText, danger }
+ * ─────────────────────────────────────────────────────────────── */
+(function () {
+  if (window.__mbxInstalled) return;
+  window.__mbxInstalled = true;
+
+  var MBOX_TAG = "__wb-mbx__";
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function ensure() {
+    var old = document.getElementById(MBOX_TAG);
+    if (old) old.remove();
+    var css = document.createElement("style");
+    css.textContent =
+      "#" + MBOX_TAG + "{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;" +
+      "background:rgba(0,0,0,.38);backdrop-filter:blur(2px);opacity:0;transition:opacity .16s ease}" +
+      "#" + MBOX_TAG + ".on{opacity:1}" +
+      "#" + MBOX_TAG + " .wb-mbx-card{min-width:300px;max-width:min(88vw,420px);border-radius:14px;" +
+      "background:var(--card,#FFFDF8);border:1px solid var(--line,#E6E2DA);box-shadow:0 18px 50px rgba(0,0,0,.22);" +
+      "padding:20px 20px 16px;transform:translateY(10px) scale(.97);transition:transform .16s ease}" +
+      "#" + MBOX_TAG + ".on .wb-mbx-card{transform:none}" +
+      "#" + MBOX_TAG + " .wb-mbx-title{font-size:15px;font-weight:600;color:var(--ink,#262019);margin:0 0 8px}" +
+      "#" + MBOX_TAG + " .wb-mbx-msg{font-size:13px;line-height:1.6;color:var(--muted,#6B655C);margin:0 0 18px;white-space:pre-wrap;word-break:break-word}" +
+      "#" + MBOX_TAG + " .wb-mbx-actions{display:flex;justify-content:flex-end;gap:10px}" +
+      "#" + MBOX_TAG + " .wb-mbx-btn{min-width:76px;padding:8px 16px;border-radius:10px;border:1px solid var(--line,#E6E2DA);" +
+      "background:var(--surface-2,#F2F0EB);color:var(--ink,#262019);font-size:13px;cursor:pointer}" +
+      "#" + MBOX_TAG + " .wb-mbx-btn:hover{background:var(--surface,#F7F5F0)}" +
+      "#" + MBOX_TAG + " .wb-mbx-btn.primary{background:var(--accent,#B5673E);border-color:var(--accent,#B5673E);color:#fff}" +
+      "#" + MBOX_TAG + " .wb-mbx-btn.danger{background:#C0392B;border-color:#C0392B;color:#fff}" +
+      "#" + MBOX_TAG + " .wb-mbx-btn.danger:hover{background:#A93226}";
+    document.head.appendChild(css);
+
+    var ov = document.createElement("div");
+    ov.id = MBOX_TAG;
+    ov.addEventListener("click", function (ev) { if (ev.target === ov) closeBox(); });
+    document.body.appendChild(ov);
+    return ov;
+  }
+
+  function closeBox(v) {
+    var nav = document.getElementById(MBOX_TAG);
+    if (!nav || !nav._resolve) return;
+    var res = nav._resolve;
+    nav._resolve = null;
+    nav.classList.remove("on");
+    setTimeout(function () { nav.innerHTML = ""; }, 180);
+    res(v);
+  }
+
+  function show(opts, confirmAndVal) {
+    opts = opts || (typeof opts === "string" ? { message: opts } : {});
+    var nav = ensure();
+    nav._resolve = null;                                   // 每次重建解析器
+    nav.innerHTML =
+      '<div class="wb-mbx-card">' +
+        (opts.title ? '<p class="wb-mbx-title">' + esc(opts.title) + "</p>" : "") +
+        '<p class="wb-mbx-msg">' + esc(opts.message || "") + "</p>" +
+        '<div class="wb-mbx-actions">' +
+          '<button class="wb-mbx-btn" data-act="cancel">' + esc(opts.cancelText || "取消") + "</button>" +
+          '<button class="wb-mbx-btn ' + (opts.danger ? "danger" : "primary") + '" data-act="ok" autofocus>' +
+            esc(opts.confirmText || "确定") + "</button>" +
+        "</div>" +
+      "</div>";
+    nav.classList.add("on");
+    var okBtn = nav.querySelector('[data-act="ok"]');
+    okBtn.addEventListener("click", function () { closeBox(true); });
+    nav.querySelector('[data-act="cancel"]').addEventListener("click", function () { closeBox(false); });
+    okBtn.focus();
+    document.addEventListener("keydown", kd, true);
+    var p = new Promise(function (res) { nav._resolve = res; });
+    return p;
+  }
+
+  function kd(e) { if (e.key === "Escape") closeBox(false); }
+
+  // 等待确认（confirm）或仅提示（alert）：返回 Promise<boolean>
+  window.showConfirm = function (opts) { return show(opts, true); };
+  window.showAlert = function (opts) { return show(opts, true); };
 })();
