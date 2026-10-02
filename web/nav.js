@@ -198,12 +198,33 @@
       .then(showBanner).catch(function () {});
   }
 
+  function clearLocal() {
+    removeBanner();
+    window.__repoUpdates = {};
+    window.dispatchEvent(new CustomEvent("repo:updates", { detail: { events: [], byRepo: {} } }));
+  }
+
   function markSeen() {
     fetch("/api/updates/seen", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
-      .then(function () { removeBanner(); window.__repoUpdates = {};
-        window.dispatchEvent(new CustomEvent("repo:updates", { detail: { events: [], byRepo: {} } })); })
+      .then(function () {
+        // 广播给其余常驻 iframe 页：一条「知道了」全场撤条，不用逐页再点
+        try { localStorage.setItem("repo_updates_seen_at", String(Date.now())); } catch (e) {}
+        try { if (bc) bc.postMessage("seen"); } catch (e) {}
+        clearLocal();
+      })
       .catch(function () {});
   }
+
+  // 跨页同步通道：storage 事件 + BroadcastChannel 双保险（同源 iframe 兄弟页都收得到；
+  // 自己写的不触发，天然不会重复撤）。两通道任一可用即生效。
+  var bc = null;
+  try {
+    bc = new BroadcastChannel("repo-updates");
+    bc.onmessage = function () { clearLocal(); };
+  } catch (e) {}
+  window.addEventListener("storage", function (e) {
+    if (e.key === "repo_updates_seen_at") clearLocal();
+  });
 
   function checkNow() {
     fetch("/api/updates/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
