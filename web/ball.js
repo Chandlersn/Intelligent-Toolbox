@@ -50,21 +50,60 @@
       .catch(function () { done(false, "网络异常"); });
   }
 
+  // ---------- Toast：球窗口只有 100x100，文字会被窗口边缘裁掉，
+  // 所以显示提示时临时把窗口向四周扩一圈（球在屏幕上的位置不动），用完还原 ----------
+  var toastWin = { expanded: false, saved: null };
+  var menuOpen = false; // IIFE 级标志：菜单开着时 toast 不动窗口
+  function expandToastWin(done) {
+    var w = curWin();
+    if (!w || !w.setSize || !w.setPosition) { if (done) done(); return; }
+    if (toastWin.expanded || menuOpen) { if (done) done(); return; } // 菜单开着不折腾窗口
+    var dpr = window.devicePixelRatio || 1;
+    w.outerPosition().then(function (p) {
+      toastWin.saved = { px: p.x, py: p.y };
+      try {
+        // 扩成 320x160：上扩 60、左右各扩 110（球保持原屏幕位置）
+        w.setPosition(Phys(p.x - Math.round(110 * dpr), p.y - Math.round(60 * dpr)));
+        w.setSize(Logical(320, 160));
+      } catch (err) {}
+      toastWin.expanded = true;
+      if (ballEl) { ballEl.style.left = "130px"; ballEl.style.top = "80px"; }
+      if (done) done();
+    }).catch(function () { if (done) done(); });
+  }
+  function collapseToastWin() {
+    var w = curWin();
+    if (!w || !toastWin.expanded) return;
+    toastWin.expanded = false;
+    if (ballEl) { ballEl.style.left = "20px"; ballEl.style.top = "20px"; }
+    var dpr = window.devicePixelRatio || 1;
+    try {
+      if (toastWin.saved) w.setPosition(Phys(toastWin.saved.px, toastWin.saved.py));
+      w.setSize(Logical(WIN_W, WIN_H));
+    } catch (err) {}
+  }
+
   function toast(msg) {
     var t = document.getElementById("repo_toast");
     if (!t) {
       t = document.createElement("div");
       t.id = "repo_toast";
-      t.style.cssText = "position:fixed;left:50%;top:16px;transform:translateX(-50%);" +
-        "background:rgba(35,32,27,.95);color:" + C.onInk + ";font:14px/1.4 -apple-system,'Segoe UI',sans-serif;" +
-        "padding:10px 16px;border-radius:10px;z-index:2147483646;opacity:0;transition:opacity .25s;" +
-        "pointer-events:none;max-width:86%;white-space:nowrap";
+      t.style.cssText = "position:fixed;background:rgba(35,32,27,.95);color:" + C.onInk +
+        ";font:13px/1.5 var(--sans);padding:9px 14px;border-radius:var(--r,9px);" +
+        "z-index:2147483646;opacity:0;transition:opacity .25s;pointer-events:none;" +
+        "text-align:center;white-space:normal";
       document.body.appendChild(t);
     }
     t.textContent = msg;
-    t.style.opacity = "1";
-    clearTimeout(t._t);
-    t._t = setTimeout(function () { t.style.opacity = "0"; }, 1600);
+    expandToastWin(function () {
+      t.style.left = "12px"; t.style.right = "12px"; t.style.top = "12px";
+      t.style.opacity = "1";
+    });
+    clearTimeout(t._t); clearTimeout(t._r);
+    t._t = setTimeout(function () {
+      t.style.opacity = "0";
+      t._r = setTimeout(collapseToastWin, 260);
+    }, 1600);
   }
 
   // 探针统一入口：回报到后端日志（诊断用）
@@ -249,6 +288,7 @@
       if (!w) return;
       if (!moved_) {
         moved_ = true;
+        collapseToastWin(); // 拖拽期间窗口必须回到常态位置
         probe({ probe: "drag-start" });
         w.outerPosition().then(function (p) {
           winOrigin = { x: p.x, y: p.y };
@@ -304,6 +344,8 @@
       if (menu) return;
       var w = curWin();
       if (!w) { openMainPage(); return; } // 非 Tauri 环境退化
+      collapseToastWin(); // toast 扩窗与菜单扩窗互斥，先进常态
+      menuOpen = true;
       try {
         if (Logical(MENU_W, MENU_H)) w.setSize(Logical(MENU_W, MENU_H));
         // 确保球窗口持有焦点，否则"点屏幕别处"不会触发 blur（收不起来）
@@ -349,6 +391,7 @@
     function hideMenu() {
       if (!menu) return;
       menu.remove(); menu = null;
+      menuOpen = false;
       var s = document.getElementById("repo_menu_shade");
       if (s) s.remove();
       var w = curWin();
