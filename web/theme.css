@@ -202,7 +202,11 @@ svg{background:radial-gradient(circle at 50% 40%, #FFFFFF 0%, var(--bg) 72%);tou
 .edge{stroke:var(--faint);stroke-width:1.2;opacity:.5;transition:opacity .2s,stroke .2s}
 .edge.hot{stroke:var(--accent);opacity:.9;stroke-width:2}
 .node.sel circle{stroke:var(--accent);stroke-width:2.5}
-.dim{opacity:.12 !important}
+/* 聚焦时"压暗到多暗"做成变量：不同页面的图谱分级策略不同
+   （map.html 用两档：邻居保留一点亮度、其余压得很暗）。 */
+.dim{opacity:var(--dim-v,.12) !important}
+/* 边比节点压得更暗一点：线的数量远多于点，全亮时视觉噪声大 */
+.edge.dim{opacity:var(--dim-edge-v,.08) !important}
 .tooltip b{color:var(--accent-2)}
 
 /* ---------- 响应式：移动端隐藏图谱右栏分隔 ---------- */

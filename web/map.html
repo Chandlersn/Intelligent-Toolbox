@@ -13,6 +13,19 @@
   header .sub b{ color:var(--accent); font-weight:600; }
   .layout{ display:grid; grid-template-columns:1fr 320px; gap:0; min-height:calc(100vh - 96px); }
   .graph-wrap{ position:relative; border-right:1px solid var(--line); }
+  /* 背景微粒场：底层一层极淡的静止尘埃，给图"悬浮在空间里"的纵深。
+     用 CSS 径向渐变点阵而非 canvas —— 零 JS 开销，滚动/切轴都不影响。 */
+  .dust{ position:absolute; inset:0; pointer-events:none; opacity:.5;
+    background-image:
+      radial-gradient(circle at 12% 22%, var(--line-soft) 0 1.2px, transparent 1.6px),
+      radial-gradient(circle at 68% 12%, var(--line-soft) 0 1px, transparent 1.4px),
+      radial-gradient(circle at 34% 74%, var(--line-soft) 0 1.4px, transparent 1.8px),
+      radial-gradient(circle at 86% 62%, var(--line-soft) 0 1px, transparent 1.4px),
+      radial-gradient(circle at 52% 44%, var(--line-soft) 0 1.1px, transparent 1.5px);
+    background-size:190px 170px, 230px 210px, 260px 190px, 210px 240px, 300px 220px; }
+  /* 节点光晕：同色高斯模糊圆，浮在节点下方。主流图谱的"玻璃/辉光"底子，
+     没有它节点就是"贴"在背景上而不是"浮"着。 */
+  .node .glow{ filter:url(#gblur); opacity:.5; }
   svg{ display:block; width:100%; height:62vh; touch-action:none; }
   .node circle{ cursor:pointer; transition:opacity .2s; }
   .node text{ font-size:10px; fill:var(--muted); pointer-events:none; user-select:none;
@@ -86,7 +99,15 @@
      JS 写位置就不会把 CSS 动画的 transform 顶掉（SVG 上 CSS transform 优先于属性）。 */
   .node{ transform-box:fill-box; transform-origin:center;
     transition:transform .28s cubic-bezier(.2,1.5,.4,1), opacity .3s ease; }
+  /* hover 邻接聚焦的三档视觉：聚焦点最亮 → 邻居中亮 → 其余压暗。
+     强度差是"悬浮感"的关键：若非邻接也压到同样暗，整张图像被整体关掉；
+     若压得不够，又看不出聚焦。主流量产图谱用 1.0 / 0.9 / 0.08~0.15 这类分层。
+     theme.css 的 .dim 带 !important，所以强度走 --dim-v 变量覆写。 */
+  svg{ --dim-v:.13; --dim-edge-v:.06; }
+  .node.near{ opacity:.5; }
+  .node.near circle{ stroke-opacity:.55; }
   .node:hover{ transform:scale(1.22); }
+  .edge.hot{ stroke-width:2.4; opacity:.95; }
   /* 入场：半径从 0 弹出；随后极轻地持续呼吸（周期越大的节点越慢），整张图像在缓慢起伏 */
   .node .core{ transform-box:fill-box; transform-origin:center;
     animation: pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards,
@@ -110,11 +131,14 @@
      入场动画用 backwards 而非 both：播完就把控制权交回类选择器，
      否则 .hot / .dim 的高亮与变暗会被动画的终值锁死（那两套是状态，不是动画）。 */
   .edge{ animation:fadeIn .45s ease var(--d,0s) backwards; }
+  /* 入场"从源点长出来"：pathLength=1 把路径归一化成 1，dashoffset 从 1 收到 0，
+     不必按实际长度算（弧线长度会随布局变，算出来的值很快就过期了）。 */
   .edge.grow{ animation:grow .8s cubic-bezier(.2,.72,.3,1) var(--d,0s) backwards,
-                    fadeIn .4s linear var(--d,0s) backwards; }
+                    fadeIn .4s linear var(--d,0s) backwards;
+              stroke-dasharray:1; stroke-dashoffset:0; }
   .edge.bridge{ animation:fadeIn .5s ease var(--d,0s) backwards,
                         flow 1.6s linear .5s infinite; }
-  @keyframes grow{ from{ stroke-dashoffset:var(--len) } to{ stroke-dashoffset:0 } }
+  @keyframes grow{ from{ stroke-dashoffset:1 } to{ stroke-dashoffset:0 } }
   @keyframes fadeIn{ from{ opacity:0 } to{ opacity:1 } }
   @keyframes flow{ to{ stroke-dashoffset:-10 } }
   /* 节点一多（批量导入后）就降档：上百个元素各自呼吸会吃帧，宁可少一点花样也别卡。
@@ -135,6 +159,7 @@
 
 <div class="layout" data-page-node-id="UK5nZXiHe8qVkn6GLVAS9T">
   <div class="graph-wrap" data-page-node-id="1ObPYYODvqCZV7097dpmbB">
+    <div class="dust" id="dust" data-page-node-id="Du5t2pQa8rLmB4nXcZa7Kq"></div>
     <div class="toolbar" data-page-node-id="qCdaSBNuLsdDI5v6YG6oeD">
       <span id="axisBtns" data-page-node-id="qOJlQr9TTqLuyGTqMKqtvf"></span>
       <span class="btn" id="btn-reset" data-page-node-id="gcudfyn7q8pABBaGJb3Rtn">重置视图</span>
@@ -245,6 +270,22 @@ const svg = document.getElementById("svg");
 const tip = document.getElementById("tip");
 const NS = "http://www.w3.org/2000/svg";
 let nodes = [], edges = [], byId = {}, W = 0, H = 0, alpha = 1, selId = null;
+// 力场的"环境下限"：alpha 向它衰减而不是归零，图永远不冻结。
+// 0.03 对应 d3 生态常用的 alphaTarget 0.02~0.05 区间（"微妙有生命感"档）。
+const ALPHA_FLOOR = 0.03;
+
+// 高斯模糊滤镜：给节点做同色辉光（主流量产图谱的"浮起感"来源之一）。
+// 滤镜 def 会被 initGraph 的"清空 svg"抹掉，所以存起来、每次重建时再挂回去。
+const BLUR_SVG = '<filter id="gblur" x="-80%" y="-80%" width="260%" height="260%">'+
+                 '<feGaussianBlur stdDeviation="3.2"/></filter>';
+function ensureDefs(){
+  let defs = svg.querySelector("defs");
+  if(!defs){
+    defs = document.createElementNS(NS, "defs");
+    svg.appendChild(defs);
+  }
+  if(!defs.querySelector("#gblur")) defs.innerHTML = BLUR_SVG;
+}
 
 function resize(){
   const r = svg.getBoundingClientRect();
@@ -410,8 +451,9 @@ function renderGaps(gaps, sample){
 /* ---------- 力导向图 ---------- */
 function initGraph(){
   resize();
-  // 清空
+  // 清空（连同 defs 一起没了，所以紧接着重建滤镜）
   while(svg.firstChild) svg.removeChild(svg.firstChild);
+  ensureDefs();
   // 初始化位置：有记忆就还原，没有再随机散开
   const saved = loadPositions();
   nodes.forEach((n,i)=>{
@@ -433,19 +475,17 @@ function initGraph(){
   alpha = 1;
   // 节点多就降档：上百个元素各自呼吸会吃帧，换成整图一个动画（开销恒定）
   svg.classList.toggle("lite", nodes.length > 90);
-  // 建边
+  // 建边：用 path 画弧线而非直线。直线僵硬，弧线有"束"的松紧感，
+  // 也是主流量产图谱的常规做法（曲线边更接近真实的关联感）。
   const edgeEls = edges.map((e,i)=>{
-    const l = document.createElementNS(NS,"line");
-    l.setAttribute("class", (e.bridge ? "edge bridge" : "edge grow"));
-    // 入场"从源点长出来"：按边长虚线化再动画收短。桥接边不参与（它另有常驻流动）
-    if(!e.bridge){
-      const a = byId[e.source], b = byId[e.target];
-      const len = (a && b) ? Math.hypot(a.x-b.x, a.y-b.y) : 300;
-      l.style.setProperty("--len", Math.ceil(len) + 1);
-    }
-    l.style.setProperty("--d", (i*26) + "ms");
-    svg.appendChild(l);
-    return {el:l, e};
+    const p = document.createElementNS(NS,"path");
+    p.setAttribute("class", (e.bridge ? "edge bridge" : "edge grow"));
+    p.setAttribute("fill","none");
+    // 归一化路径长度到 1，入场生长动画就能用 0→1 的 dashoffset，与实际弧长无关
+    p.setAttribute("pathLength","1");
+    p.style.setProperty("--d", (i*26) + "ms");
+    svg.appendChild(p);
+    return {el:p, e};
   });
   // 建节点
   const nodeEls = nodes.map((n,i)=>{
@@ -457,6 +497,11 @@ function initGraph(){
     const halo = document.createElementNS(NS,"circle");
     halo.setAttribute("class","halo");
     halo.setAttribute("r", n.r + 5);
+    // 光晕：同色模糊圆垫在节点下。没有它节点是"贴"在背景上，加了才"浮"起来。
+    const glow = document.createElementNS(NS,"circle");
+    glow.setAttribute("class","glow");
+    glow.setAttribute("r", n.r + 2);
+    glow.setAttribute("fill", colorOf(nodeGroup(n)));
     const c = document.createElementNS(NS,"circle");
     c.setAttribute("class","core");
     c.setAttribute("r", n.r);
@@ -469,6 +514,7 @@ function initGraph(){
     t.setAttribute("text-anchor","middle");
     t.setAttribute("dy", n.r + 10);
     t.textContent = n.name;
+    pos.appendChild(glow);
     pos.appendChild(halo);
     pos.appendChild(c);
     // 认知端节点：外圈虚线环（与生产端实心圆区分）
@@ -486,7 +532,9 @@ function initGraph(){
   });
   window.__edgeEls = edgeEls;
   window.__nodeEls = nodeEls;
-  wake();  // 新图就位，从头启动一轮布局（含冷却后休眠，不会空转）
+  // 新图就位：从头跑一轮完整布局，之后自然衰减到环境档（不会空转）
+  alpha = 1;
+  loop();
 }
 
 function neighbors(id){
@@ -513,6 +561,22 @@ function tick(){
       a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
     }
   }
+  // 碰撞力（d3 forceCollide 的等价实现）：按"节点半径 + 文字占位"硬性推开。
+  // 之前只有软性斥力，近距离时封顶在 5 就推不动了，节点和文字会叠在一起；
+  // 这项是主流通用做法，也是"节点之间有真实间距"的前提。
+  for(let i=0;i<nodes.length;i++){
+    for(let j=i+1;j<nodes.length;j++){
+      const a=nodes[i], b=nodes[j];
+      let dx=a.x-b.x, dy=a.y-b.y;
+      let d=Math.sqrt(dx*dx+dy*dy) || 0.01;
+      const min = a.r + b.r + 26;      // 26 ≈ 节点名文字的横向占位
+      if(d >= min) continue;
+      const f = (min - d) * 0.09;      // 重叠越深推得越狠
+      let fx=dx/d*f, fy=dy/d*f;
+      if(!a.fixed && !a.pinned){ a.vx+=fx; a.vy+=fy; }
+      if(!b.fixed && !b.pinned){ b.vx-=fx; b.vy-=fy; }
+    }
+  }
   // 引力(边)
   edges.forEach(e=>{
     const a=byId[e.source], b=byId[e.target];
@@ -528,6 +592,16 @@ function tick(){
     n.vx += (W/2 - n.x)*0.0018;
     n.vy += (H/2 - n.y)*0.0018;
   });
+  // 环境噪声力：d3 生态的标准做法（alphaTarget + 每帧随机扰动）。
+  // 关键在"随机"——规则的正弦摆动看着像钟摆，随机扰动才像水里的浮尘。
+  // 幅度极小（±0.09），视觉上只是持续微微挪动，不会打乱已收敛的布局。
+  if(alpha > ALPHA_FLOOR){
+    nodes.forEach(n=>{
+      if(n.fixed || n.pinned) return;
+      n.vx += (Math.random()-0.5) * 0.18;
+      n.vy += (Math.random()-0.5) * 0.18;
+    });
+  }
   // 积分（拖动中的节点与用户钉住的节点不参与，摆好的位置不被动）
   nodes.forEach(n=>{
     if(n.fixed || n.pinned) return;
@@ -536,70 +610,65 @@ function tick(){
     n.x = Math.max(n.r, Math.min(W-n.r, n.x));
     n.y = Math.max(n.r, Math.min(H-n.r, n.y));
   });
-  alpha *= 0.992;
+  // alpha 向"环境下限"衰减而不是归零：力场一直有微弱能量，图永远不冻结。
+  // 这是 d3 alphaTarget 的等价物，也是主流图谱"永远活着"的根本原因。
+  alpha += (ALPHA_FLOOR - alpha) * 0.02;
   render();
-  // 布局冷却后不直接死掉：转低频 idle 慢漂（十几帧一次，省 CPU），
-  // 靠 CSS 呼吸 + 边的流动撑起"活着"的感觉；用户一碰就 wake() 回满帧。
-  if(alpha < 0.02 && !dragNode){
-    alpha = 0.02;
-    if(idleAllowed()){
-      enterIdle();
-      return;
-    }
-    rafOn = false; return;
-  }
-  requestAnimationFrame(tick);
+  // 调度交给外层的 loop() 决定（满帧 / 20fps 降频），tick 只管力学。
+  loop();
 }
-let rafOn = false, idleTimer = null, wanderT = 0;
-// 慢漂只是性能档位，不是设置项：节点太多（批量导入后）时关掉，
-// 否则每帧要做 N² 斥力。正常规模永远开着。
+let idleTimer = null, loopScheduled = false;
 function idleAllowed(){ return nodes.length <= 160; }
+// 统一调度口：交互中（能量高 / 拖拽中）走满帧，稳定后降到 ~20fps。
+// forceCollide + 斥力是 O(N²)，满帧每帧都算太烧 CPU；但降频只是少渲染，
+// 力学一步没少，所以图照样是"活着"的。
+// 注意：低频档必须自己排下一次定时器再设 loopScheduled，否则标志永远为 true、图直接静止。
+function loop(){
+  if(loopScheduled) return;           // 防重复排程
+  loopScheduled = true;
+  if(alpha > 0.05 || dragNode){
+    requestAnimationFrame(()=>{ loopScheduled = false; tick(); });
+  } else if(idleAllowed()){
+    idleTimer = setTimeout(()=>{ loopScheduled = false; tick(); }, 50);
+  } else {
+    loopScheduled = false;            // 节点太多且无交互：彻底停表，别空烧
+  }
+}
 function wake(){
   if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
-  if(rafOn) return;
-  rafOn = true;
-  requestAnimationFrame(tick);
-}
-// 进 idle：记下基准位置，慢漂只是围绕它做几像素的呼吸式游走，不会整体乱跑
-function enterIdle(){
-  rafOn = false;
-  nodes.forEach(n=>{ n.bx = n.x; n.by = n.y; });
-  idleTimer = setTimeout(idleTick, 70);
-}
-function idleTick(){
-  idleTimer = setTimeout(idleTick, 70);
-  wanderT += 70;
-  nodes.forEach(n=>{
-    if(n.fixed) return;
-    // 钉住的节点不参与游走：用户摆好的位是"意图"，别去动它。
-    // 但视觉上仍随外层呼吸缩放（那是 CSS，不改坐标），所以不会显得完全僵死。
-    if(n.pinned) return;
-    // 频率与相位都错开，避免整张图同相位摆动（那看起来像整体在平移而不是各自呼吸）。
-    // 周期约 9~13s、幅度 ±7px：慢到不干扰读图，快到盯住任一点能看出它在动。
-    const ph = n.ph || 0;
-    const ax = Math.cos(wanderT*0.00058 + ph) * 7;
-    const ay = Math.sin(wanderT*0.00044 + ph*1.7) * 7;
-    n.x = Math.max(n.r, Math.min(W-n.r, n.bx + ax));
-    n.y = Math.max(n.r, Math.min(H-n.r, n.by + ay));
-  });
-  render();
+  alpha = Math.max(alpha, 0.28);      // 交互时把能量拉起来，松手后衰减回环境档
+  loop();
 }
 // 页面藏起来（切标签/最小化）就别空转，回来时再唤醒
 document.addEventListener("visibilitychange", ()=>{
-  if(document.hidden){ if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; } rafOn = false; }
-  else { wake(); }
+  if(document.hidden){
+    if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
+    loopScheduled = false;
+  } else {
+    wake();
+  }
 });
 
 function render(){
   window.__edgeEls.forEach(({el,e})=>{
     const a=byId[e.source], b=byId[e.target];
     if(!a||!b) return;
-    el.setAttribute("x1",a.x); el.setAttribute("y1",a.y);
-    el.setAttribute("x2",b.x); el.setAttribute("y2",b.y);
+    // 二次贝塞尔：控制点在连线中点，按两端 id 决定往哪侧偏。
+    // 用 id 而非坐标定符号，节点移动时弯曲方向不会"翻面"。
+    const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    const sign = ((e.source|e.target) % 2) ? 1 : -1;
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const len=Math.sqrt(dx*dx+dy*dy)||1;
+    // 垂线方向偏移，弯曲量随距离增长（短边近乎直，长边明显弯）
+    const bow = Math.min(34, len*0.16) * sign;
+    const cx = mx - dy/len*bow, cy = my + dx/len*bow;
+    el.setAttribute("d", "M"+a.x.toFixed(1)+","+a.y.toFixed(1)+
+                       " Q"+cx.toFixed(1)+","+cy.toFixed(1)+
+                       " "+b.x.toFixed(1)+","+b.y.toFixed(1));
   });
   window.__nodeEls.forEach(({g,pos,c,t,n})=>{
     // 位置写在 .pos 上，外层 g 的 transform 留给 CSS 缩放/脉冲动画
-    pos.setAttribute("transform","translate("+n.x+","+n.y+")");
+    pos.setAttribute("transform","translate("+n.x.toFixed(1)+","+n.y.toFixed(1)+")");
   });
 }
 
@@ -649,11 +718,16 @@ function bindNode(g, n){
   g.addEventListener("mouseenter", e=>{
     hoverNode = n;
     // 悬停时把周围节点轻轻唤醒让位（低频即可，视觉上"点一下会推开邻居"）
-    if(idleTimer){ alpha = Math.max(alpha, 0.3); wake(); }
+    wake();
+    applyHighlight();     // 邻接聚焦：邻居留亮、其余压暗 —— 悬浮感的主要来源
     showTip(n, e);
   });
   g.addEventListener("mousemove", e=>moveTip(e));
-  g.addEventListener("mouseleave", ()=>{ if(hoverNode===n) hoverNode = null; hideTip(); });
+  g.addEventListener("mouseleave", ()=>{
+    if(hoverNode===n) hoverNode = null;
+    applyHighlight();
+    hideTip();
+  });
 }
 svg.addEventListener("mousemove", e=>dragMove(e.clientX, e.clientY));
 window.addEventListener("mouseup", dragEnd);
@@ -694,26 +768,33 @@ function toggleDomain(name){
   applyHighlight();
 }
 function applyHighlight(){
-  const nb = selId && !String(selId).startsWith("D:") ? neighbors(selId) : null;
   const domainFilter = selId && String(selId).startsWith("D:") ? selId.slice(2) : null;
+  // 聚焦源：选中优先，其次 hover。两者都没有就全亮。
+  // hover 邻接聚焦是"悬浮感"的主要来源 —— 鼠标移上去，邻居留亮、其余压暗、
+  // 连边点亮，那一瞬整张图才像"活"的（主流量产图谱都这么做，如 Neo4j Bloom / Cytoscape）。
+  const focusId = (selId && !String(selId).startsWith("D:")) ? selId
+                 : (hoverNode ? hoverNode.id : null);
+  const focusing = focusId !== null;
+  const fnb = focusing ? neighbors(focusId) : null;
   window.__nodeEls.forEach(({g,n})=>{
     let on = true;
     if(domainFilter) on = (nodeGroup(n) === domainFilter);
-    else if(nb!==null) on = (n.id===selId || nb.has(n.id));
+    else if(focusing) on = (n.id===focusId || fnb.has(n.id));
     g.classList.toggle("dim", !on);
     g.classList.toggle("sel", n.id===selId);
+    g.classList.toggle("near", focusing && n.id!==focusId && fnb.has(n.id));
   });
   window.__edgeEls.forEach(({el,e})=>{
     let hot=false, on=true;
     if(domainFilter){
       on = (nodeGroup(byId[e.source]) === domainFilter && nodeGroup(byId[e.target]) === domainFilter);
-    } else if(nb!==null){
-      on = (e.source===selId||e.target===selId);
+    } else if(focusing){
+      on = (e.source===focusId||e.target===focusId);
       hot = on;
     }
     // 桥接边是「碰撞」重点：除非显式被过滤掉，否则始终高亮（不被 dim）
     el.classList.toggle("dim", !on && !e.bridge);
-    el.classList.toggle("hot", hot || (e.bridge && (nb!==null || domainFilter)));
+    el.classList.toggle("hot", hot || (e.bridge && (focusing || domainFilter)));
   });
 }
 
