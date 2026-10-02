@@ -77,8 +77,7 @@ const wrapped = src + `
   get releaseAt(){return releaseAt;}, set releaseAt(v){releaseAt=v;},
   get W(){return W;}, set W(v){W=v;},
   get H(){return H;}, set H(v){H=v;},
-  get dragMovedFlag(){return dragMoved;},
-  NODEELS: ()=>window.__nodeEls, C: (n)=>({LINK_REST,CONTACT_PAD,REPEL_FADE,DRAG_SHOVE,SETTLE_MS,RELEASE_DAMP,DAMP})
+  NODEELS: ()=>window.__nodeEls, C: (n)=>({LINK_REST,CONTACT_PAD,REPEL_FADE,DRAG_SHOVE,SETTLE_MS,RELEASE_DAMP,DAMP,HOME_K,HOME_SOFT})
 };`;
 try {
   new Function(wrapped)();
@@ -91,58 +90,153 @@ try {
 const api = global.__api;
 
 // ---- 塞一个真实场景进去，驱动 tick ----
-const mk=(id,x,y,r,pinned)=>({id,x,y,vx:0,vy:0,r,fixed:false,pinned:!!pinned,settleUntil:0,ph:0,stars:100,label:id});
-api.nodes = [ mk("A",300,380,14), mk("B",430,380,12,false), mk("C",560,380,10,false) ];
-api.byId = {}; api.nodes.forEach(n=>api.byId[n.id]=n);
-api.edges = [{source:"A",target:"B",bridge:false},{source:"B",target:"C",bridge:false}];
-window.__nodeEls = api.nodes.map(n=>{
-  const g = mkEl('g'), pos = mkEl('g'), c = mkEl('circle'), t = mkEl('text');
-  pos.appendChild(c); pos.appendChild(t); g.appendChild(pos);
-  return { n, g, pos, c, t };
-});
-window.__edgeEls = api.edges.map(e=>({ e, el: mkEl('path') }));
-window.__edgeEls.forEach(({e,el})=>{ el.setAttribute('class','edge grow'); });
-api.alpha = 0;
-api.dragMoved = false;
-api.W = 1200; api.H = 760;   // initGraph 没跑，手动给画布尺寸（否则 clamp 会把所有节点钉在 x=14）
+// mk 必须带上 bx/by：新模型里 pinned 节点靠回锚弹簧回"家"，没有 bx/by 会算成 NaN。
+// （真实页面 initGraph 会给每个节点设 bx/by；桩里要手动补齐，否则测的是残缺逻辑。）
+const mk=(id,x,y,r,pinned)=>({id,x,y,vx:0,vy:0,r,fixed:false,pinned:!!pinned,settleUntil:0,
+  bx:x,by:y,ph:0,stars:100,label:id,dvx:0,dvy:0});
 
-const C = api.C(api.nodes[0]);
+// 一个通用的"按 60fps 推进"驱动器：紧循环 tick 会让 performance.now() 几乎不走，
+// 余波期永远结束不了，测出来是"假死循环"而不是真实行为（踩过）。
+function drive(ms, onFrame){
+  const t0 = Date.now(), FRAME = 1000/60;
+  let frames = 0;
+  while(Date.now()-t0 < ms){
+    api.tick();
+    frames++;
+    if(onFrame) onFrame(frames);
+    if(!isFinite(api.nodes[0].x)){ console.log("★ 出现 NaN/Inf！"); process.exit(1); }
+    const target = t0 + frames*FRAME;
+    const wait = target - Date.now();
+    if(wait > 1) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    if(frames>500) break;
+  }
+  return frames;
+}
+// 驱动到"真正静止"：alpha 归零的那一帧，代码会把所有速度清零（见 tick 末尾），
+// 所以 alpha===0 即代表全图速度精确为 0。用来判断"动效结束后是否真的停干净"。
+// onFrame 可选：每帧回调，用来跟踪峰值速度 / 最大位移等过程量。
+function driveUntilRest(maxMs, onFrame){
+  const t0 = Date.now(), FRAME = 1000/60;
+  let frames = 0;
+  while(Date.now()-t0 < maxMs){
+    api.tick();
+    frames++;
+    if(onFrame) onFrame(frames);
+    if(!isFinite(api.nodes[0].x)){ console.log("★ 出现 NaN/Inf！"); process.exit(1); }
+    const target = t0 + frames*FRAME;
+    const wait = target - Date.now();
+    if(wait > 1) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    if(api.alpha === 0) break;     // alpha=0 且上一帧已清零速度 → 真静止
+    if(frames>800) break;
+  }
+  return frames;
+}
+function harness(nodes, edges){
+  api.nodes = nodes;
+  api.byId = {}; nodes.forEach(n=>api.byId[n.id]=n);
+  api.edges = edges;
+  window.__nodeEls = nodes.map(n=>{
+    const g = mkEl('g'), pos = mkEl('g'), c = mkEl('circle'), t = mkEl('text');
+    pos.appendChild(c); pos.appendChild(t); g.appendChild(pos);
+    return { n, g, pos, c, t };
+  });
+  window.__edgeEls = edges.map(e=>({ e, el: mkEl('path') }));
+  window.__edgeEls.forEach(({e,el})=>{ el.setAttribute('class','edge grow'); });
+  api.alpha = 0; api.dragMoved = false;
+  api.W = 1200; api.H = 760;   // initGraph 没跑，手动给画布尺寸（否则 clamp 会把所有节点钉在 x=14）
+}
+// 模拟真实匀速拖拽（不跑物理）：每帧移动固定 (dx,dy)，dvx/dvy 恒为 (dx,dy)，和松手速度挂钩。
+function drag(node, dx, dy, frames){
+  api.startDrag(node);
+  for(let i=0;i<frames;i++){ api.dragMove(node.x + dx, node.y + dy); }
+}
+// 拖拽"带着物理跑"：每帧先 dragMove 再 tick，用来观察"拖一个、连着的邻居跟着动"。
+function dragWithTicks(node, dx, dy, frames){
+  api.startDrag(node);
+  for(let i=0;i<frames;i++){ api.dragMove(node.x + dx, node.y + dy); api.tick(); }
+}
+
+const C = api.C(mk("x",0,0,10));
 console.log("");
 console.log("常量确认: LINK_REST="+C.LINK_REST+" CONTACT_PAD="+C.CONTACT_PAD+" REPEL_FADE="+C.REPEL_FADE+
-            " DRAG_SHOVE="+C.DRAG_SHOVE+" SETTLE_MS="+C.SETTLE_MS+" RELEASE_DAMP="+C.RELEASE_DAMP+" DAMP="+C.DAMP);
+            " DRAG_SHOVE="+C.DRAG_SHOVE+" SETTLE_MS="+C.SETTLE_MS+" RELEASE_DAMP="+C.RELEASE_DAMP+
+            " DAMP="+C.DAMP+" HOME_K="+C.HOME_K+" HOME_SOFT="+C.HOME_SOFT);
+let allOk = true;
 
-// 拖动 → 撞 → 松手
-api.startDrag(api.nodes[0]);
-for(let i=0;i<16;i++){ api.dragMove(300+10*(i+1), 380); }
-const A = api.nodes[0];
-const relX = A.x, relV = A.vx;
-api.dragEnd();
-console.log("");
-console.log("松手后: pinned="+A.pinned+" settleUntil="+A.settleUntil+" vx="+A.vx.toFixed(2)+" inSettle="+api.inSettle());
-
-// 跑余波
-// 按真实 rAF 节奏推进：紧循环 tick 会让 performance.now() 几乎不走，
-// 余波期永远结束不了，测出来的是"假死循环"而不是真实行为。
-let glide=0, maxSp=0, frames=0;
-const t0 = Date.now();
-const FRAME = 1000/60;
-while(Date.now()-t0 < 2600){
-  api.tick();
-  frames++;
-  maxSp = Math.max(maxSp, Math.hypot(A.vx,A.vy));
-  if(!isFinite(A.x)||!isFinite(A.vx)){ console.log("★ 出现 NaN/Inf！"); process.exit(1); }
-  // 睡到下一帧：模拟 60fps
-  const target = t0 + frames*FRAME;
-  const wait = target - Date.now();
-  if(wait > 1) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
-  if(frames>400) break;
+// ===== 场景 1：开阔地松手 —— 惯性滑行必须肉眼可见 =====
+// 单节点、无连线：纯粹验证"松手后顺着拖拽方向滑一段再停"，不被邻居的弹簧分食。
+harness([ mk("A",300,380,14) ], []);
+{
+  const A = api.nodes[0];
+  drag(A, 10, 0, 16);              // 匀速拖 16 帧 × 10px → 松手速度 8px/帧
+  const relX = A.x;                // 落点
+  api.dragEnd();
+  const v0 = A.vx;
+  let peak = 0, maxGlide = 0;
+  driveUntilRest(5000, ()=>{
+    const sp = Math.hypot(A.vx, A.vy);
+    if(sp > peak) peak = sp;
+    const gl = Math.hypot(A.x - relX, A.y - 380);
+    if(gl > maxGlide) maxGlide = gl;
+  });
+  const glide = Math.hypot(A.x - relX, A.y - 380);
+  const finalV = Math.hypot(A.vx, A.vy);
+  const pass = glide > 100 && peak > 5 && finalV === 0 && api.alpha === 0 && isFinite(A.x);
+  allOk = allOk && pass;
+  console.log("[场景1 惯性滑行] 松手速度="+v0.toFixed(1)+" 峰值速度="+peak.toFixed(1)+
+              " 滑行="+glide.toFixed(0)+"px 终速=0="+(finalV===0)+" alpha=0="+(api.alpha===0)+
+              "  →  "+(pass?"OK":"FAIL（滑行太短=松手即停）"));
 }
-glide = Math.hypot(A.x-relX, A.y-380);
-console.log("余波跑了 "+frames+" 帧");
-console.log("滑行 = "+glide.toFixed(1)+"px   峰值速度 = "+maxSp.toFixed(1)+"px/帧");
-console.log("终态: vx="+A.vx.toFixed(5)+" settleUntil="+A.settleUntil+" pinned="+A.pinned);
-console.log("节点 B 位置 = "+api.nodes[1].x.toFixed(1)+"  (被撞动过)");
+
+// ===== 场景 2：松手甩向已摆(pinned)节点 —— 弹性碰撞，对方必须被撞开（不是撞墙）=====
+// 旧模型：pinned 被排除在碰撞之外（invB=0）→ 撞上去像撞墙，零动量传递。
+// 新模型：pinned 照样吃冲量。验证被撞的已摆节点确实位移。
+harness([ mk("A",300,380,14), mk("B",480,380,12,true) ], []);   // B 已摆、无连线
+{
+  const A = api.nodes[0], B = api.nodes[1];
+  const Bx0 = B.x;
+  drag(A, 10, 0, 14);              // A: 300 → 440（距 B 还有 40px，迎面接近）
+  api.dragEnd();                   // 松手：A 带着 8px/帧 滑向 B
+  let Bmax = 0;
+  driveUntilRest(5000, ()=>{ const d = Math.abs(B.x - Bx0); if(d > Bmax) Bmax = d; });
+  const moved = Math.abs(B.x - Bx0);
+  // 已摆节点被撞后会"弹开再弹回原位"（有家可回），所以看的是碰撞瞬间的峰值位移，
+  // 不是最终停在哪。只要峰值明显非零，就证明它不是焊死的墙。
+  const pass = Bmax > 5;
+  allOk = allOk && pass;
+  console.log("[场景2 撞已摆节点] B 初始家="+Bx0.toFixed(0)+" 碰撞峰值位移="+Bmax.toFixed(1)+
+              "px（最终回弹至 "+moved.toFixed(1)+"px）  →  "+(pass?"OK 已摆节点会被撞开":"FAIL 仍是焊死墙"));
+}
+
+// ===== 场景 3：拖动牵引链 —— 拖一个有连线的节点，pinned 邻居要跟着动 =====
+// 旧模型：边力排除 pinned → 拖一个、连着的已摆邻居纹丝不动（死的一团）。
+// 新模型：边力照常作用于 pinned。验证拖拽过程中邻居被拉动。
+harness([ mk("A",300,380,14), mk("B",480,380,12,true) ], [{source:"A",target:"B"}]);
+{
+  const A = api.nodes[0], B = api.nodes[1];
+  const Bx0 = B.x;
+  dragWithTicks(A, 10, 0, 14);     // 拖 A 的同时跑物理：边弹簧把 pinned B 拉过来
+  const moved = Math.abs(B.x - Bx0);
+  api.dragEnd();
+  const pass = moved > 5;
+  allOk = allOk && pass;
+  console.log("[场景3 链式牵引] 拖 A 时 pinned B 被边拉动位移="+moved.toFixed(1)+
+              "px  →  "+(pass?"OK 邻居跟着动":"FAIL 邻居不动"));
+}
+
+// ===== 场景 4：静止性回归 —— 摆好的图不应永远在动 =====
+harness([ mk("A",300,380,14,true), mk("B",430,380,12,true) ], [{source:"A",target:"B"}]);
+{
+  api.alpha = 0.5; api.wake(0.5);
+  const frames = driveUntilRest(5000);
+  const settled = api.alpha === 0 && api.nodes.every(n=>Math.hypot(n.vx,n.vy)===0);
+  const pass = settled;
+  allOk = allOk && pass;
+  console.log("[场景4 静止性] 摆好的图能否彻底静止(alpha=0, 全节点速度=0)  →  "+
+              (pass?"OK":"FAIL")+"  (用了"+frames+"帧)");
+}
+
 console.log("");
-const ok = glide>50 && maxSp<30 && Math.hypot(A.vx,A.vy)<0.001 && A.settleUntil===0 && isFinite(A.x);
-console.log(ok ? "浏览器环境验证通过" : "浏览器环境验证未通过");
-process.exit(ok?0:1);
+console.log(allOk ? "浏览器环境验证通过（含惯性滑行 + 撞已摆节点 + 链式牵引 + 静止性）"
+                  : "浏览器环境验证未通过");
+process.exit(allOk?0:1);

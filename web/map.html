@@ -111,16 +111,19 @@
   /* 入场：半径从 0 弹出。随后是否持续"呼吸"，取决于图有没有能量 ——
      见下方 svg.moving。静止的图不该一直起伏（用户原话："我都没法选中节点，就一直动"），
      呼吸只在你拖动/余波期间出现，停下来就彻底不动。 */
-  .node .core{ transform-box:fill-box; transform-origin:center;
-    animation: pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards; }
-  svg.moving .node .core{ animation:
-               pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards,
-               breathe var(--bd,5.2s) ease-in-out var(--d,0s) infinite; }
-  @keyframes pop{ from{ r:0 } to{ r:var(--r) } }
-  /* 呼吸幅度 1.18：r≈7 的小节点视觉约 1.3px，r≈19 的大节点约 3.4px。
-     周期按节点大小给（大块头更沉稳），相位按黄金角错开 —— 三个错开叠加，
-     整张图看起来是"各自在呼吸"，而不是齐刷刷地一起缩放。 */
+  .node .core{ transform-box:fill-box; transform-origin:center; }
+  /* 呼吸：只给"完全静止"的图一点生命感。运动中必须关掉（见下方 svg.moving 覆盖），
+     否则节点一边平移一边缩放，看着像果冻在抖，而不是实心球在动（用户："动效真的差"）。
+     呼吸幅度 1.18：r≈7 的小节点约 1.3px，r≈19 的大节点约 3.4px；相位按黄金角错开。 */
+  .node .core{ animation: breathe var(--bd,5.2s) ease-in-out var(--d,0s) infinite; }
   @keyframes breathe{ 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.18) } }
+  /* 运动中：普通节点关掉呼吸（被拖的节点由 .node.dragging .core 的 dragPulse 接管，
+     发生碰撞的节点由下方 squash 接管）。这样"运动 = 实心球平移"，不是"果冻缩放"。 */
+  svg.moving .node:not(.dragging) .core{ animation: none; }
+  /* 撞击挤压：碰撞那一瞬节点被压扁再弹回 —— 这才是"弹性球"的体感，不是永远在呼吸。
+     只在运动中、且发生碰撞(ping)的节点上触发；普通节点运动时不缩放。 */
+  @keyframes squash{ 0%{transform:scale(1)} 28%{transform:scale(1.24,.8)} 60%{transform:scale(.9,1.1)} 100%{transform:scale(1)} }
+  svg.moving .node.ping .core{ animation: squash .34s ease-out; transform-box:fill-box; transform-origin:center; }
   /* hover：一圈扩散的涟漪，把注意力明确拽到这个点上。
      是一次性播放而非无限循环 —— 悬停是"看"，看的时候不该有东西一直闪。 */
   .node .halo{ fill:none; stroke:var(--accent); stroke-width:2; opacity:0;
@@ -312,8 +315,14 @@ let releaseAt = 0;
 function inSettle(){
   return releaseAt > 0 && (performance.now() - releaseAt) < SETTLE_MS;
 }
+/* "这个节点现在参不参与物理"的唯一判据。
+   关键修正：pinned 不再等于"焊死不动" —— 只排除正在被鼠标抓着的 fixed 节点。
+   之前的版本写成 `!n.pinned || inSettle()`，导致已摆好的节点（pinned）在拖拽过程中
+   完全不被力场推动：拖一个、连着的邻居不动（链式牵引失效），撞一个、对方像墙（弹性球失效）。
+   现在 pinned 节点照常参与力场，只是额外多一条"回锚弹簧"（见 tick 积分段），
+   让它们平时稳、被拖/被撞时又能动。 */
 function isFree(n){
-  return !n.fixed && (!n.pinned || inSettle());
+  return !n.fixed;
 }
 /* 力场能量。
    重要：这里让 alpha 能真正归零（图会完全静止），而不是设一个"永不下限"。
@@ -359,6 +368,15 @@ const REPEL_FADE  = 26;    // 斥力淡出宽度：接触面处衰减到 0，这
 const DRAG_SHOVE  = 1.2;   // 拖动时额外的"挤开感"强度（只作用于中距离，不压接触面）
 const DRAG_SHOVE_REACH = 30; // 挤开感作用半径：接触面处与该距离外都为 0
 const DRAG_BOOST  = 1.0;   // 拖拽时边刚度倍率（让被拖动的牵引更明显）
+// ---- 回锚弹簧（pinned 节点 = "有家可回"，不是"焊死不动"）----
+// 之前 pinned 被定义成"完全不参与力场"，等于一地焊死的坐标：
+//   拖一个节点时，连着的已摆节点纹丝不动（链式牵引失效）；
+//   撞一个已摆节点时，对方吃不到冲量，像撞墙（弹性球失效）。
+// 改成：pinned 节点平时被这条回锚弹簧轻轻拉在 bx/by（静止时仍是稳的、可点），
+//   但拖动 / 碰撞仍能把它们推动 —— 这才是"有连线就跟着动 + 撞到会弹开"。
+// HOME_K 是平时的回锚刚度（够硬、不乱漂）；HOME_SOFT 是余波期的（让惯性先演完）。
+const HOME_K      = 0.045; // 平时回锚刚度：稳但可被牵引/碰撞轻易推开
+const HOME_SOFT   = 0.006; // 余波期回锚刚度：让松手后的惯性 & 碰撞余震先播完
 
 // 高斯模糊滤镜：给节点做同色辉光（主流量产图谱的"浮起感"来源之一）。
 // 滤镜 def 会被 initGraph 的"清空 svg"抹掉，所以存起来、每次重建时再挂回去。
@@ -732,8 +750,11 @@ function tick(){
            ③ 切向保留摩擦（不打滑），这是"真实感"的一半来源 */
       const min = contact;
       if(d >= min) continue;
-      const aFree = isFree(a);
-      const bFree = isFree(b);
+      // ★ 只有"正在被鼠标抓着"的 fixed 节点不参与碰撞（它已经由指针驱动）；
+      //   pinned（已摆好）的节点照样吃冲量、照样被推开 —— 这才是弹性球撞到邻居，
+      //   而不是撞墙。之前写成 isFree（含 !pinned），导致被撞的已摆节点纹丝不动。
+      const aFree = !a.fixed;
+      const bFree = !b.fixed;
       if(!aFree && !bFree) continue;
 
       // 质量按面积算：半径大的节点撞起来更有份量（也是最直观的物理直觉）
@@ -804,12 +825,15 @@ function tick(){
     let f=(d-LINK_REST)*lk;
     // 轴向阻尼：沿边方向的速度差会衰减，抑制"弹簧高频抖动"
     // （没有它，边会像橡皮筋一样永久振荡，看起来很假）
-    if(isFree(a) && isFree(b)){
+    // 轴向阻尼只在双方都能动时算；被鼠标抓着的 fixed 节点由指针驱动
+    if(!a.fixed && !b.fixed){
       const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
       f += (rvx*nx + rvy*ny) * LINK_DAMP;
     }
-    if(isFree(a)){ a.vx += nx*f; a.vy += ny*f; }
-    if(isFree(b)){ b.vx -= nx*f; b.vy -= ny*f; }
+    // ★ 不再用 isFree 排除 pinned：已摆好的邻居照样被边弹簧牵引，
+    //   这样"拖一个有连线的节点，连着的跟着动"才成立（否则就是死的一团）。
+    if(!a.fixed){ a.vx += nx*f; a.vy += ny*f; }
+    if(!b.fixed){ b.vx -= nx*f; b.vy -= ny*f; }
   });
 
   // 中心引力
@@ -825,7 +849,7 @@ function tick(){
   if(alpha > ALPHA_LIVE){
     for(let i=0;i<N;i++){
       const n = nodes[i];
-      if(!isFree(n)) continue;
+      if(n.fixed) continue;   // 只有被鼠标抓着的节点不参与；pinned 的已摆节点照样轻微扰动
       n.vx += (Math.random()-0.5) * 0.18;
       n.vy += (Math.random()-0.5) * 0.18;
     }
@@ -848,7 +872,10 @@ function tick(){
        这样"摆位会被记住"和"松手有惯性"就不再互相排斥。 */
   const now = performance.now();
   const damp = settling ? RELEASE_DAMP : DAMP;
+  // 余波期的回锚刚度更软：让松手后的惯性 & 碰撞余震先演完，弹簧再缓缓把被撞的邻居拉回原位
+  const homeK = settling ? HOME_SOFT : HOME_K;
   let settledAny = false;              // 本帧是否有节点走完余波、正式锁定
+  let maxSp = 0;                       // 本帧最大速度，用于判断"是否还在动"
   for(let i=0;i<N;i++){
     const n = nodes[i];
     if(n.fixed) continue;
@@ -860,13 +887,18 @@ function tick(){
       const el = (window.__nodeEls||[]).find(o=>o.n===n);
       if(el) el.g.classList.add("pinned");
     }
-    // ★ 判据必须和力学各段用同一个 isFree()，不能写 `if(n.pinned) continue`。
-    //   两者差一个"余波期内不算真钉住"，后果就是松手的节点一帧都不挪 ——
-    //   那正是"为啥我一松手马上就停了"的直接原因。
-    //   （这一处曾和碰撞/边力三处各写一遍判据，结果互相矛盾。）
-    if(!isFree(n)) continue;
-    // ★ 两段阻尼：余波期用低阻尼（惯性滑行），其余用常规阻尼（布局收敛）。
-    //   只用 DAMP=0.82 的话，松手滑行上限被压到 31px，肉眼就是"立刻停住"。
+    // ★ pinned = "有家可回"，不是"焊死"：平时被回锚弹簧轻轻拉在 bx/by（静止时仍是稳的），
+    //   但拖动 / 碰撞照样能把节点推动（链式牵引 + 弹性碰撞的关键）。
+    //   这里不再写 `if(!isFree(n)) continue` —— 那样又会把已摆节点变回死坐标。
+    //   ★ 但"自己刚松手、余波窗口(settleUntil)还没结束"的节点要除外：这一刻它要纯惯性滑行，
+    //     回锚弹簧若以"落点"为家会把它往回拽，于是节点只是绕落点振荡、最后停在落点附近 ——
+    //     看起来还是"松手即停"（实测：甩出去先冲到 541，又被软弹簧拉回 491 止步）。
+    //     正确做法：松手节点余波期内自由滑、滑到哪算哪；余波结束那帧才把落点定为新家。
+    //     其它被波及的已摆节点(settleUntil=0)照常走软回锚(HOME_SOFT)，撞完缓缓弹回原位。
+    if(n.pinned && !n.settleUntil){
+      n.vx += (n.bx - n.x) * homeK;
+      n.vy += (n.by - n.y) * homeK;
+    }
     n.vx *= damp; n.vy *= damp;
     // 限速：防止大力拖拽/连环碰撞把节点甩飞（也是 d3 的常见做法）
     const sp = Math.hypot(n.vx, n.vy);
@@ -874,6 +906,7 @@ function tick(){
     n.x += n.vx*f2; n.y += n.vy*f2;
     n.x = Math.max(n.r, Math.min(W-n.r, n.x));
     n.y = Math.max(n.r, Math.min(H-n.r, n.y));
+    if(sp > maxSp) maxSp = sp;
   }
   // alpha 衰减到 0 = 图完全静止。
   // 拖动中衰减慢（0.05）：松手后邻居的余波要持续一会儿才停，手感才对。
@@ -884,7 +917,10 @@ function tick(){
   // ★ 余波期例外：alpha 会在余波期内衰减到 0（这是设计要的），
   //   但余波期还没演完，必须继续跑完 SETTLE_MS 才允许停表。
   //   少了这个条件，调度器会在松手 0.3 秒后就判定"静止"停表 —— 惯性演到一半被冻住。
-  const alive = alpha > ALPHA_LIVE || !!drag || settling;
+  // ★ 停表判据：除了能量/拖拽/余波，还要看"是否还有节点在动"。
+  //   不然被撞飞的已摆节点正在回弹、或松手节点还在滑行，调度器却因 alpha 归零而停表，
+  //   它们会被中途冻住（看起来像"啪一下卡死"）。maxSp 兜底：一切真静下来才停。
+  const alive = alpha > ALPHA_LIVE || !!drag || settling || maxSp > 0.05;
   if(!alive){
     nodes.forEach(n=>{ n.vx = 0; n.vy = 0; });
     alpha = 0;      // 硬归零：避免残留一个极小值导致下一帧又续排
@@ -1038,6 +1074,10 @@ function dragEnd(){
     // 此刻先进入余波期（settleUntil），期间它照常参与物理，惯性演完再锁。
     n.pinned = true;
     n.settleUntil = performance.now() + SETTLE_MS;
+    // ★ 把"家"设成落点，而不是它之前钉住的位置：否则余波期的回锚弹簧会把它往旧家拽，
+    //   滑行轨迹被拉弯、甚至滑不出去（观感又变回"松手被吸住"）。
+    //   余波期回锚力已软化（HOME_SOFT），家=落点后拉力本就很小，惯性主导，滑完再锁。
+    n.bx = n.x; n.by = n.y;
     // 视觉上"已摆好"的标记要等余波结束再加（tick 里补），
     // 现在加会让用户以为"放下去就被钉住了"，正好是要避免的观感。
     const el = (window.__nodeEls || []).find(o => o.n === n);
