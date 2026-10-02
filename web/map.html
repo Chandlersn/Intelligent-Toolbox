@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<html lang="zh-CN" data-page-node-id="sx2redOxFY2cQV7hJo4yQA">
+<head data-page-node-id="FwaIrhK9EjBn3bALLWOohc">
+<meta charset="UTF-8" data-page-node-id="pD7AwoYVlQFqs15G6qrd1g" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" data-page-node-id="fzMDkEDhLRcHfUC2v3vhIe" />
 <title>收藏箱 · 图谱</title>
-<link rel="stylesheet" href="/theme.css">
+<link rel="stylesheet" href="/theme.css" data-page-node-id="gYAaoG3PeJ6JrGHqxkWHUb">
 <style>
   html,body{ margin:0; padding:0; }
   header{ padding:18px 20px 12px; border-bottom:1px solid var(--line); }
@@ -15,8 +15,11 @@
   .graph-wrap{ position:relative; border-right:1px solid var(--line); }
   svg{ display:block; width:100%; height:62vh; touch-action:none; }
   .node circle{ cursor:pointer; transition:opacity .2s; }
-  .node text{ font-size:9px; fill:var(--muted); pointer-events:none; user-select:none;
-    transition:opacity .2s; }
+  .node text{ font-size:10px; fill:var(--muted); pointer-events:none; user-select:none;
+    transition:opacity .2s; paint-order:stroke; stroke:var(--bg); stroke-width:3px;
+    stroke-linejoin:round; }
+  /* 拖动摆过位的节点：细描边标记"已钉住"，重置视图才散开 */
+  .node.pinned circle{ stroke:var(--ink); stroke-opacity:.4; stroke-width:1.4; }
   .node.sel circle{ stroke:var(--accent); stroke-width:2.5; }
   .aside{ padding:16px 16px 24px; overflow:auto; }
   .aside h2{ font-size:14px; font-weight:600; margin:4px 0 12px; color:var(--ink); }
@@ -78,55 +81,55 @@
   }
 </style>
 </head>
-<body data-nav="map">
-<header>
-  <h1>图谱</h1>
-  <div class="sub">已收藏 <b id="st-total">0</b> 个仓库 · 覆盖 <b id="st-domain">0</b> 个<span id="st-unit">领域</span> · 缺角建议 <b id="st-gap">0</b> 条<span id="st-bridge-wrap" hidden> · 碰撞桥接 <b id="st-bridge">0</b> 处</span></div>
+<body data-nav="map" data-page-node-id="Sf70JOAuR1xdCYFUaI4h1Z">
+<header data-page-node-id="iGY6EYekd8ekiCEzoGmpOG">
+  <h1 data-page-node-id="KyTexdIGrU5fwVkTtXfWoG">图谱</h1>
+  <div class="sub" data-page-node-id="uKUNbYqFwpl3rJTZM0fFsR">已收藏 <b id="st-total" data-page-node-id="cf55LKhxmAtUjteuZOfwBx">0</b> 个仓库 · 覆盖 <b id="st-domain" data-page-node-id="SQ0w3s9wIl3HFGfU0Yo9Uj">0</b> 个<span id="st-unit" data-page-node-id="n4UchRTzHyoaC5mOxCq4o7">领域</span> · 缺角建议 <b id="st-gap" data-page-node-id="AFo6f40bt2bTwpebu1uH6B">0</b> 条<span id="st-bridge-wrap" hidden data-page-node-id="XHJeYbEbm3NYoWado01Dzl"> · 碰撞桥接 <b id="st-bridge" data-page-node-id="bsouamfJCNWeG0iL7kJaqU">0</b> 处</span></div>
 </header>
 
-<div class="layout">
-  <div class="graph-wrap">
-    <div class="toolbar">
-      <span id="axisBtns"></span>
-      <span class="btn" id="btn-reset">重置视图</span>
+<div class="layout" data-page-node-id="UK5nZXiHe8qVkn6GLVAS9T">
+  <div class="graph-wrap" data-page-node-id="1ObPYYODvqCZV7097dpmbB">
+    <div class="toolbar" data-page-node-id="qCdaSBNuLsdDI5v6YG6oeD">
+      <span id="axisBtns" data-page-node-id="qOJlQr9TTqLuyGTqMKqtvf"></span>
+      <span class="btn" id="btn-reset" data-page-node-id="gcudfyn7q8pABBaGJb3Rtn">重置视图</span>
     </div>
-    <svg id="svg"></svg>
+    <svg id="svg" data-page-node-id="2sECMVmS1gg7lY92rCOUWg"></svg>
   </div>
 
-  <aside>
-    <h2 id="dist-t">领域分布</h2>
-    <div id="domains"></div>
+  <aside data-page-node-id="sqJbZF7j7c9uTZXql8kiFF">
+    <h2 id="dist-t" data-page-node-id="Z4r2fnbDZ6jBiMznZWWJZe">领域分布</h2>
+    <div id="domains" data-page-node-id="IOrLTsjVDnyS4s6xZhGOEP"></div>
 
-    <h2>领域相邻（来自你的收藏）</h2>
-    <div class="src-note">这一块是真算出来的：两个领域之间有多少种技术栈重叠。有重叠说明它们在你这儿是连着的 —— 点一下高亮对应领域。</div>
-    <div id="links"></div>
+    <h2 data-page-node-id="vnMsVZEAw4TAGdlIHGYIL3">领域相邻（来自你的收藏）</h2>
+    <div class="src-note" data-page-node-id="f80A0Wv32Mgg50Sjxni404">这一块是真算出来的：两个领域之间有多少种技术栈重叠。有重叠说明它们在你这儿是连着的 —— 点一下高亮对应领域。</div>
+    <div id="links" data-page-node-id="n2mUwJmEOLvihoKH7nzzbg"></div>
 
-    <h2>可能感兴趣（缺角）</h2>
-    <div class="src-note">这一块是<b>种子先验</b>（编者预判的常见搭配），不是对你的行为统计 —— 样本够了以后会换成真共现。</div>
-    <div id="gaps"></div>
+    <h2 data-page-node-id="AvaaCsUUE5cvfizpjxVdY9">可能感兴趣（缺角）</h2>
+    <div class="src-note" data-page-node-id="Vobmi6GlxnH5FutBex2fDH">这一块是<b data-page-node-id="nTabKGLbmGL001ek0D5e3F">种子先验</b>（编者预判的常见搭配），不是对你的行为统计 —— 样本够了以后会换成真共现。</div>
+    <div id="gaps" data-page-node-id="SdSKfnRK2Ek2bXJHlzXCI0"></div>
 
-    <h2>AI 缺角识别</h2>
-    <div id="aiSection" hidden>
-      <div class="src-note">当前配置的模型基于你的收藏画像生成：推测你接下来还可能想关注哪类领域 + 为什么。置信度越高越可信。</div>
-      <div id="aiGaps">
-        <div class="sk" style="height:14px;width:86%;margin:6px 0 10px"></div>
-        <div class="sk" style="height:13px;width:66%;margin-bottom:10px"></div>
-        <div class="sk" style="height:13px;width:72%"></div>
+    <h2 data-page-node-id="qrlyV8PDTIKmS3MPva8HKA">AI 缺角识别</h2>
+    <div id="aiSection" hidden data-page-node-id="QhGsDFvXLUKDNAGczZGMCy">
+      <div class="src-note" data-page-node-id="3S1zDZklFWEY07f2BwB70l">当前配置的模型基于你的收藏画像生成：推测你接下来还可能想关注哪类领域 + 为什么。置信度越高越可信。</div>
+      <div id="aiGaps" data-page-node-id="I0UB33g9eCBDRYUk5Mhu2t">
+        <div class="sk" style="height:14px;width:86%;margin:6px 0 10px" data-page-node-id="fB7Dm3SPMmbxxoh9pGfDnx"></div>
+        <div class="sk" style="height:13px;width:66%;margin-bottom:10px" data-page-node-id="W8hjDWH6tEVfT9OgGpo8Ae"></div>
+        <div class="sk" style="height:13px;width:72%" data-page-node-id="cYajUmxTp0NCCMonegtRj1"></div>
       </div>
-      <button class="btn ai-refresh" id="btn-ai-refresh">重新生成</button>
+      <button class="btn ai-refresh" id="btn-ai-refresh" data-page-node-id="NhnlxSIXCOpHAmY6tWAV3u">重新生成</button>
     </div>
-    <div class="note">关联边表示仓库间的领域 / 标签关系。缺角仅供参考，不代表你一定需要。</div>
+    <div class="note" data-page-node-id="Dl2Zab27748Vms161gYm4g">关联边表示仓库间的领域 / 标签关系。缺角仅供参考，不代表你一定需要。</div>
 
-    <h2>碰撞桥接</h2>
-    <div class="bridge-note">生产端（GitHub/GitLab 仓库）与认知端（抖音等内容）在<b>同一领域</b>轴相撞时，用陶土虚线连起来 —— 这正是「行为收藏」与「认知收藏」互相激发的地方。</div>
-    <div class="legend-k"><span class="sw"></span>生产端 ↔ 认知端 桥接</div>
-    <div class="legend-k"><span class="dot"></span>认知端节点（抖音等内容）</div>
-    <div class="note">生产端节点为实心圆；认知端节点外圈加虚线环。</div>
-  <div class="note">拖动节点可手动摆位，布局会被记住；点「重置视图」可重新散开。</div>
+    <h2 data-page-node-id="LLw7jb7wnRoAZBo5ruI1T2">碰撞桥接</h2>
+    <div class="bridge-note" data-page-node-id="tODuMCGUdkivqLB7m7cs8R">生产端（GitHub/GitLab 仓库）与认知端（抖音等内容）在<b data-page-node-id="ED339w9gCWHijbZGBRZLIY">同一领域</b>轴相撞时，用陶土虚线连起来 —— 这正是「行为收藏」与「认知收藏」互相激发的地方。</div>
+    <div class="legend-k" data-page-node-id="DX0ax0LZHrP8zOrYV5XFdT"><span class="sw" data-page-node-id="oywuJ4NJ7FrwE5u896dLIs"></span>生产端 ↔ 认知端 桥接</div>
+    <div class="legend-k" data-page-node-id="KNHbJnCkfV1ErJmGWU2xAK"><span class="dot" data-page-node-id="44TdvClOePHSGBERVpAvb7"></span>认知端节点（抖音等内容）</div>
+    <div class="note" data-page-node-id="Dt8DuGEiilXSdQNeLUn9Eb">生产端节点为实心圆；认知端节点外圈加虚线环。</div>
+  <div class="note" data-page-node-id="P2OXaURboPipGfpaatilyI">拖动节点可手动摆位：摆过的节点会钉在原地（带细描边标记），重开页面也保持；点「重置视图」全部重新散开。</div>
   </aside>
 </div>
 
-<div class="tooltip" id="tip"></div>
+<div class="tooltip" id="tip" data-page-node-id="RzvjDOK88UeA6pgElGX3Ai"></div>
 
 <script>
 const PALETTE = {
@@ -207,7 +210,7 @@ const POS_KEY = "repo_map_pos";
 function savePositions(){
   try {
     const o = {};
-    nodes.forEach(n => { o[n.id] = {x: Math.round(n.x), y: Math.round(n.y)}; });
+    nodes.forEach(n => { o[n.id] = {x: Math.round(n.x), y: Math.round(n.y), p: n.pinned ? 1 : 0}; });
     localStorage.setItem(POS_KEY, JSON.stringify(o));
   } catch(e){}
 }
@@ -376,6 +379,8 @@ function initGraph(){
     n.vx = 0; n.vy = 0;
     n.r = 7 + Math.min(12, Math.log10((n.stars||1)+1)*3.4);
     n.fixed = false;
+    // 钉住状态跟随记忆还原：摆过的节点重开/切轴后仍待在原地
+    n.pinned = !!(s && s.p);
   });
   alpha = 1;
   // 建边
@@ -388,7 +393,7 @@ function initGraph(){
   // 建节点
   const nodeEls = nodes.map(n=>{
     const g = document.createElementNS(NS,"g");
-    g.setAttribute("class","node");
+    g.setAttribute("class","node" + (n.pinned ? " pinned" : ""));
     const c = document.createElementNS(NS,"circle");
     c.setAttribute("r", n.r);
     c.setAttribute("fill", colorOf(nodeGroup(n)));
@@ -411,7 +416,7 @@ function initGraph(){
   });
   window.__edgeEls = edgeEls;
   window.__nodeEls = nodeEls;
-  if(!window.__rafStarted){ window.__rafStarted = true; requestAnimationFrame(tick); }
+  wake();  // 新图就位，从头启动一轮布局（含冷却后休眠，不会空转）
 }
 
 function neighbors(id){
@@ -424,14 +429,14 @@ function neighbors(id){
 }
 
 function tick(){
-  // 斥力
+  // 斥力（力封顶：节点贴近时不爆炸，只温和推开）
   for(let i=0;i<nodes.length;i++){
     for(let j=i+1;j<nodes.length;j++){
       const a=nodes[i], b=nodes[j];
       let dx=a.x-b.x, dy=a.y-b.y;
       let d2=dx*dx+dy*dy || 0.01;
       let d=Math.sqrt(d2);
-      let f=2600/d2;
+      let f=Math.min(2600/d2, 5);
       let fx=dx/d*f, fy=dy/d*f;
       a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
     }
@@ -451,16 +456,24 @@ function tick(){
     n.vx += (W/2 - n.x)*0.0018;
     n.vy += (H/2 - n.y)*0.0018;
   });
-  // 积分
+  // 积分（拖动中的节点与用户钉住的节点不参与，摆好的位置不被动）
   nodes.forEach(n=>{
-    if(n.fixed) return;
+    if(n.fixed || n.pinned) return;
     n.vx*=0.84; n.vy*=0.84;
     n.x += n.vx*alpha; n.y += n.vy*alpha;
     n.x = Math.max(n.r, Math.min(W-n.r, n.x));
     n.y = Math.max(n.r, Math.min(H-n.r, n.y));
   });
-  alpha *= 0.992; if(alpha<0.02) alpha=0.02;
+  alpha *= 0.992;
   render();
+  // 布局冷却且没有拖拽时休眠，省掉无意义的每帧计算；有动作时 wake() 再启动
+  if(alpha < 0.02 && !dragNode){ alpha = 0.02; rafOn = false; return; }
+  requestAnimationFrame(tick);
+}
+let rafOn = false;
+function wake(){
+  if(rafOn) return;
+  rafOn = true;
   requestAnimationFrame(tick);
 }
 
@@ -477,29 +490,49 @@ function render(){
 }
 
 /* ---------- 交互 ---------- */
-function bindNode(g, n){
-  let moved=false;
-  const down = (cx,cy)=>{ n.fixed=true; moved=false; };
-  const move = (cx,cy)=>{
-    if(!n.fixed) return;
-    const r=svg.getBoundingClientRect();
-    const x=cx-r.left, y=cy-r.top;
-    if(Math.abs(x-n.x)>3||Math.abs(y-n.y)>3) moved=true;
-    n.x=x; n.y=y;
-  };
-  const up = ()=>{ n.fixed=false; if(moved) savePositions(); else openCard(n); };
+/* 拖拽全局只绑一次：initGraph 会随切轴/刷新反复执行，逐节点挂 window 监听会成倍堆积。 */
+let dragNode = null, dragMoved = false;
 
-  g.addEventListener("mousedown", e=>{ e.preventDefault(); down(e.clientX,e.clientY); });
-  window.addEventListener("mousemove", e=>{ if(n.fixed) move(e.clientX,e.clientY); });
-  window.addEventListener("mouseup", ()=>{ if(n.fixed) up(); });
-  g.addEventListener("touchstart", e=>{ const t=e.touches[0]; down(t.clientX,t.clientY); }, {passive:true});
-  g.addEventListener("touchmove", e=>{ const t=e.touches[0]; move(t.clientX,t.clientY); }, {passive:true});
-  g.addEventListener("touchend", ()=>{ if(n.fixed) up(); });
+function startDrag(n){
+  dragNode = n; dragMoved = false;
+  n.fixed = true;
+  alpha = Math.max(alpha, 0.35);  // 轻加热：拖动时邻近节点轻微让位，不显死板
+  wake();
+}
+function dragMove(cx, cy){
+  if(!dragNode) return;
+  const r = svg.getBoundingClientRect();
+  const x = cx - r.left, y = cy - r.top;
+  if(Math.abs(x - dragNode.x) > 3 || Math.abs(y - dragNode.y) > 3) dragMoved = true;
+  dragNode.x = x; dragNode.y = y;
+}
+function dragEnd(){
+  if(!dragNode) return;
+  const n = dragNode; dragNode = null;
+  n.fixed = false;
+  if(dragMoved){
+    // 摆过位 = 用户要它待在这：钉住 + 记忆，放手后被力场拉不回去
+    n.pinned = true;
+    const el = (window.__nodeEls || []).find(o => o.n === n);
+    if(el) el.g.classList.add("pinned");
+    savePositions();
+  } else {
+    openCard(n);
+  }
+}
+
+function bindNode(g, n){
+  g.addEventListener("mousedown", e=>{ e.preventDefault(); startDrag(n); });
+  g.addEventListener("touchstart", e=>{ startDrag(n); }, {passive:true});
 
   g.addEventListener("mouseenter", e=>showTip(n, e));
   g.addEventListener("mousemove", e=>moveTip(e));
   g.addEventListener("mouseleave", hideTip);
 }
+svg.addEventListener("mousemove", e=>dragMove(e.clientX, e.clientY));
+window.addEventListener("mouseup", dragEnd);
+svg.addEventListener("touchmove", e=>{ const t=e.touches[0]; dragMove(t.clientX, t.clientY); }, {passive:true});
+svg.addEventListener("touchend", dragEnd);
 function showTip(n, e){
   const ax = AXES.find(a => a.key === curAxis) || AXES[0];
   const kindTxt = (n.kind==='cognition') ? '认知端（抖音等）' : '生产端（仓库）';
@@ -507,7 +540,7 @@ function showTip(n, e){
     '<br>'+kindTxt+
     '<br>星标：'+(n.stars||0).toLocaleString()+' · '+esc(n.maturity || '')+
     (n.purpose? '<br><br>'+esc(n.purpose) : '')+
-    '<br><span style="opacity:.72">点击这个节点 → 跳到它在卡片页的卡片</span>';
+    '<br><span style="opacity:.72">'+(n.pinned ? '位置已钉住（重置视图可散开）· 点击 → 跳到卡片' : '点击这个节点 → 跳到它在卡片页的卡片')+'</span>';
   tip.style.opacity = 1; moveTip(e);
 }
 function moveTip(e){ tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; }
@@ -551,11 +584,18 @@ function applyHighlight(){
 
 document.getElementById("btn-reset").onclick = ()=>{
   selId = null; applyHighlight();
-  // 同时清掉拖拽记忆，给一个重新散开的出口（布局乱了就点这里）
+  // 真正的"重置"：清拖拽记忆、解除钉住、重新散开并重启布局（否则点了没有任何可见变化）
   try { localStorage.removeItem(POS_KEY); } catch(e){}
+  nodes.forEach((n,i)=>{
+    n.pinned = false; n.fixed = false;
+    n.x = W/2 + Math.cos(i)*120 + (Math.random()-0.5)*60;
+    n.y = H/2 + Math.sin(i)*120 + (Math.random()-0.5)*60;
+    n.vx = 0; n.vy = 0;
+  });
+  alpha = 1; wake();
 };
 // 轴切换逻辑已在 renderToolbar() 里按动态按钮绑定；这里不再重复绑定写死的按钮。
-window.addEventListener("resize", ()=>{ resize(); });
+window.addEventListener("resize", ()=>{ resize(); wake(); });
 
 // ---- AI 缺角识别：模型基于收藏画像推「还想要哪类领域」----
 function loadAiGaps(){
