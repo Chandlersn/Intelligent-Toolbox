@@ -1,12 +1,11 @@
 (function () {
-  // 悬浮球组件：可拖拽、可拖入链接收集、点按从剪贴板收集。跨页面/跨平台（web/webview）。
-  // 用法：<script src="ball.js"></script>，可选 window.REPO_COLLECTOR 指向收集端点。
+  // 悬浮球组件（桌面壳专用）：只保留「收」球，不弹任何面板。
+  // 拖球 = 拖动整个透明窗口（Tauri startDragging），因此能在整屏任意放置，
+  // 窗口之外不挡点击。点球 = 静默从剪贴板读取仓库地址并收藏（不弹输入框）。
+  // 页面与脚本由收集器后端 8732 直供，唯一真源不漂移。
   var COLLECTOR = window.REPO_COLLECTOR || (location.origin + "/collect");
   var KEY_POS = "repo_ball_pos";
 
-  // 颜色：先取宿主页面的主题变量，取不到再用同值兜底。
-  // 球会被注入任意第三方页面（那些页面并没有 theme.css），所以必须靠 var() 第二参数兜底 ——
-  // 纯写死 hex 的话，主题换色时球会是唯一跟不上的那块。
   var C = {
     accent: "var(--accent,#B5673E)",
     accentInk: "var(--accent-ink,#FFFFFF)",
@@ -16,6 +15,14 @@
     ink: "var(--ink,#23201B)",
     onInk: "var(--on-ink,#FBFAF7)"
   };
+
+  // Tauri v2 全局 API（withGlobalTauri 已开）。不在 Tauri 里则 curWin() 为 null，
+  // 此时退化为普通页面上的可拖拽球（不影响其他用途）。
+  var wmod = (window.__TAURI__ && window.__TAURI__.window) ? window.__TAURI__.window : null;
+  function curWin() { return wmod ? wmod.getCurrentWindow() : null; }
+  function Phys(x, y) {
+    try { return new wmod.PhysicalPosition(x, y); } catch (e) { return null; }
+  }
 
   function isRepo(u) {
     try {
@@ -55,82 +62,58 @@
     t._t = setTimeout(function () { t.style.opacity = "0"; }, 1600);
   }
 
-  function openPanel() {
-    var existing = document.getElementById("repo_panel");
-    if (existing) { existing.remove(); return; }
-    var p = document.createElement("div");
-    p.id = "repo_panel";
-    p.style.cssText = "position:fixed;right:16px;bottom:88px;width:min(320px,86vw);" +
-      "background:" + C.surface + ";border:1px solid " + C.line + ";border-radius:13px;" +
-      "box-shadow:0 18px 50px rgba(35,32,27,.18);z-index:2147483646;padding:14px;" +
-      "font-family:-apple-system,'Segoe UI','PingFang SC',sans-serif";
-    p.innerHTML =
-      '<div style="font-size:13px;color:' + C.ink + ';opacity:.7;margin-bottom:8px">粘贴仓库地址</div>' +
-      '<input id="repo_url" style="width:100%;font-size:16px;color:' + C.ink + ';background:' + C.surface2 + ';' +
-      'border:1px solid ' + C.line + ';border-radius:10px;padding:12px;box-sizing:border-box;outline:none" ' +
-      'placeholder="https://github.com/owner/repo">' +
-      '<button id="repo_go" style="width:100%;margin-top:10px;min-height:46px;font-size:16px;' +
-      'font-weight:600;color:' + C.accentInk + ';background:' + C.accent + ';border:none;border-radius:12px">收藏</button>';
-    document.body.appendChild(p);
-    var inp = p.querySelector("#repo_url");
-    inp.focus();
-    p.querySelector("#repo_go").addEventListener("click", function () {
-      var u = inp.value.trim();
-      if (!u) { toast("先粘贴地址"); return; }
-      if (!isRepo(u)) { toast("仅支持 GitHub / GitLab 地址"); return; }
-      collect(u, "", function (ok, err, dup) {
-        toast(ok ? (dup ? "已收藏过" : "已收藏 ✓") : ("失败: " + (err || "")));
-        if (ok) p.remove();
-      });
-    });
-  }
-
   function makeBall() {
     var ball = document.createElement("div");
     ball.id = "repo_ball";
-    var size = 56;
-    ball.style.cssText = "position:fixed;width:" + size + "px;height:" + size + "px;border-radius:50%;" +
-      "background:" + C.accent + ";color:" + C.accentInk + ";display:flex;align-items:center;justify-content:center;" +
-      "font-size:20px;font-weight:600;cursor:grab;z-index:2147483647;" +
-      "box-shadow:0 6px 20px rgba(181,103,62,.36);user-select:none;touch-action:none;" +
-      "font-family:-apple-system,'Segoe UI',sans-serif";
+    var size = 60;
+    // 窗口就是 100x100 的透明浮层，球居中放（left/top 固定，移动靠拖动窗口）。
+    ball.style.cssText = "position:fixed;width:" + size + "px;height:" + size + "px;left:20px;top:20px;" +
+      "border-radius:50%;background:" + C.accent + ";color:" + C.accentInk + ";" +
+      "display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:600;" +
+      "cursor:grab;z-index:2147483647;box-shadow:0 6px 20px rgba(181,103,62,.36);" +
+      "user-select:none;touch-action:none;font-family:-apple-system,'Segoe UI',sans-serif";
     ball.textContent = "收";
     document.body.appendChild(ball);
 
-    var pos = JSON.parse(localStorage.getItem(KEY_POS) || "null");
-    var x = pos ? pos.x : window.innerWidth - size - 16;
-    var y = pos ? pos.y : window.innerHeight - size - 88;
-    function place(nx, ny) {
-      nx = Math.max(8, Math.min(window.innerWidth - size - 8, nx));
-      ny = Math.max(8, Math.min(window.innerHeight - size - 8, ny));
-      ball.style.left = nx + "px";
-      ball.style.top = ny + "px";
-    }
-    place(x, y);
+    // 恢复上次窗口位置（满屏任意放置）
+    try {
+      var pos = JSON.parse(localStorage.getItem(KEY_POS) || "null");
+      var w = curWin();
+      if (pos && w) { w.setPosition(Phys(pos.x, pos.y)); }
+      else if (!pos && w && window.screen) {
+        // 首次：放到右下角
+        w.setPosition(Phys(window.screen.availWidth - 130, window.screen.availHeight - 130));
+      }
+    } catch (e) {}
 
-    var dragging = false, sx = 0, sy = 0, ox = 0, oy = 0, moved = false;
-    ball.addEventListener("pointerdown", function (e) {
-      dragging = true; moved = false; ball.style.cursor = "grabbing";
-      sx = e.clientX; sy = e.clientY;
-      var r = ball.getBoundingClientRect(); ox = r.left; oy = r.top;
-      ball.setPointerCapture(e.pointerId);
-    });
-    ball.addEventListener("pointermove", function (e) {
-      if (!dragging) return;
-      var dx = e.clientX - sx, dy = e.clientY - sy;
-      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
-      place(ox + dx, oy + dy);
-    });
-    ball.addEventListener("pointerup", function (e) {
-      if (!dragging) return;
-      dragging = false; ball.style.cursor = "grab";
-      var r = ball.getBoundingClientRect();
-      var nx = (r.left < window.innerWidth / 2) ? 8 : window.innerWidth - size - 8;
-      place(nx, r.top);
-      localStorage.setItem(KEY_POS, JSON.stringify({ x: parseFloat(ball.style.left), y: parseFloat(ball.style.top) }));
-      if (!moved) onTap();
+    var downPos = null, dragging = false;
+
+    ball.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      var w = curWin();
+      if (!w) return;
+      try {
+        w.outerPosition().then(function (p) { downPos = { x: p.x, y: p.y }; });
+        w.startDragging(); // 拖动整个窗口 = 球随窗口走，可任意摆放
+      } catch (err) {}
+      dragging = true;
     });
 
+    ball.addEventListener("mouseup", function () {
+      if (!dragging) return;
+      dragging = false;
+      var w = curWin();
+      if (!w) return;
+      try {
+        w.outerPosition().then(function (p) {
+          var moved = !downPos || Math.abs(p.x - downPos.x) > 3 || Math.abs(p.y - downPos.y) > 3;
+          localStorage.setItem(KEY_POS, JSON.stringify({ x: p.x, y: p.y }));
+          if (!moved) onTap(); // 没移动 = 点按
+        });
+      } catch (err) {}
+    });
+
+    // 拖入链接直接收藏
     ball.addEventListener("dragover", function (e) { e.preventDefault(); ball.style.transform = "scale(1.12)"; });
     ball.addEventListener("dragleave", function () { ball.style.transform = ""; });
     ball.addEventListener("drop", function (e) {
@@ -144,6 +127,7 @@
       } else { toast("拖入的链接不是仓库地址"); }
     });
 
+    // 点按：静默尝试从剪贴板收藏，不弹面板
     function onTap() {
       if (navigator.clipboard && navigator.clipboard.readText) {
         navigator.clipboard.readText().then(function (txt) {
@@ -152,9 +136,9 @@
             collect(m[0], "", function (ok, err, dup) {
               toast(ok ? (dup ? "已收藏过" : "已收藏 ✓") : ("失败: " + (err || "")));
             });
-          } else { openPanel(); }
-        }).catch(function () { openPanel(); });
-      } else { openPanel(); }
+          } else { toast("剪贴板里没有仓库地址"); }
+        }).catch(function () { toast("无法读取剪贴板"); });
+      } else { toast("无法读取剪贴板"); }
     }
   }
 

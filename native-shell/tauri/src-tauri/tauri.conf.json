@@ -15,14 +15,14 @@
         "label": "main",
         "title": "收藏箱",
         "url": "http://127.0.0.1:8732/ball.html",
-        "width": 280,
-        "height": 360,
+        "width": 100,
+        "height": 100,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "resizable": false,
         "visible": true,
-        "center": true
+        "center": false
       }
     ],
     "security": {
