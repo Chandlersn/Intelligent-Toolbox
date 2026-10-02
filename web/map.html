@@ -300,6 +300,21 @@ const NS = "http://www.w3.org/2000/svg";
 let nodes = [], edges = [], byId = {}, W = 0, H = 0, alpha = 1, selId = null;
 // _wasAlive 记住上一帧的"活/静"，只在翻转时才动 svg 的 class（避免每帧写 DOM）
 let _wasAlive = true;
+// releaseAt = 上一次松手的时刻（0 = 从没松过手）。余波期按它算：
+// 弹簧软化 + 节点不锁定，让惯性自己演完。见 tick() 开头与 dragEnd()。
+let releaseAt = 0;
+/* 余波期判定与"能不能被力场推动"的唯一判据。
+   为什么要单独一个函数：力学散在 4 段（碰撞 / 边 / 噪声 / 积分），
+   每一段都要问同一个问题"这个节点现在动不动"。
+   早期是每段各写一句 `!n.pinned`，结果改了碰撞忘了改边力，
+   就会出现"节点被弹开了但还被弹簧拽回去"这种自相矛盾。
+   判据收敛到一处：pinned 只在"余波期结束之后"才真的等于钉死。 */
+function inSettle(){
+  return releaseAt > 0 && (performance.now() - releaseAt) < SETTLE_MS;
+}
+function isFree(n){
+  return !n.fixed && (!n.pinned || inSettle());
+}
 /* 力场能量。
    重要：这里让 alpha 能真正归零（图会完全静止），而不是设一个"永不下限"。
    之前的 ALPHA_FLOOR=0.03 + 持续噪声力 = 图永远在微微漂移，结果是
@@ -309,6 +324,23 @@ let _wasAlive = true;
 const ALPHA_FLOOR = 0;      // 能量地板：允许完全静止
 const ALPHA_LIVE  = 0.06;   // 低于此值视为静止，停止施加噪声并让调度器停表
 const ALPHA_DRAG  = 0.5;    // 拖动时的工作能量
+const ALPHA_RELEASE = 0.42; // 松手后的余波能量：够滑行 + 撞出碰撞
+const SETTLE_MS   = 900;    // 余波期时长：这段时间内惯性照常演完，之后才锁定
+const SETTLE_SENS = 0.8;    // 余波期的固定积分灵敏度：让惯性按阻尼自然衰减完
+const RELEASE_KEEP = 0.8;  // 松手时把手速传给节点的比例（1 = 完全等速，太冲）
+/* ★ 两段阻尼：布局收敛 vs 惯性滑行，必须分开。
+   之前只有一个 DAMP=0.82（每帧保留 82% 速度），算下来纯阻尼滑行上限
+   = v0 · f2 / (1-DAMP) = 7.7 × 0.72 / 0.18 ≈ 31px —— 也就是说
+   **无论怎么调松手速度，节点最多只能滑 31px 就没了**，
+   肉眼看就是"松手立刻停住"（用户原话："为啥我一送手马上就停了呢"）。
+   31px 还没一根线长，物理上根本不成立：一个被甩出去的手办不会在 30px 内静止。
+   所以：
+     DAMP         = 0.82 → 布局收敛用。要"图能真正静止"就得快，静止是产品硬要求。
+     RELEASE_DAMP = 0.955 → 惯性滑行用。松手后 1 秒内保留惯性，
+                          纯阻尼滑行 = 11 × 0.8 / 0.045 ≈ 195px，肉眼清晰可见。
+   两者不能混用：拿布局的阻尼去滑，滑不动；拿滑行的阻尼去布局，图停不下来。 */
+const RELEASE_DAMP = 0.955;
+const SETTLE_LINK_SOFT = 0.22; // 余波期边刚度倍率：让惯性先演完，弹簧再缓缓拉回
 
 // ---- 物理常量（集中一处，便于按手感调）----
 const LINK_REST   = 108;   // 边的理想长度（弹簧平衡位置）
@@ -319,8 +351,13 @@ const REPEL_CAP   = 6.5;   // 斥力封顶：贴近时不爆炸
 const CENTER_K    = 0.0022;// 中心引力：防止整张图被拖到边界外
 const DAMP        = 0.82;  // 全局速度阻尼（略高于临界，弹几下就稳）
 const SENS_MIN    = 0.30;  // 稳定态的速度灵敏度下限：低于 0.2 图会冻成静物
-const RESTITUTION = 0.72;  // 弹性碰撞恢复系数：0=完全非弹性(死球)，越接近 1 越弹
+const RESTITUTION = 0.72;  // 弹性碰撞恢复系数
+const FRICTION    = 0.18;  // 切向摩擦系数（擦过会打滑，撞起来才不像玻璃）
+const IMPULSE_CAP = 12;    // 单帧冲量上限：数值兜底，防止极端参数下正反馈爆炸：0=完全非弹性(死球)，越接近 1 越弹
 const CONTACT_PAD = 8;     // 碰撞接触面之外的额外间隙（给文字留呼吸）
+const REPEL_FADE  = 26;    // 斥力淡出宽度：接触面处衰减到 0，这个距离之外才满强度
+const DRAG_SHOVE  = 1.2;   // 拖动时额外的"挤开感"强度（只作用于中距离，不压接触面）
+const DRAG_SHOVE_REACH = 30; // 挤开感作用半径：接触面处与该距离外都为 0
 const DRAG_BOOST  = 1.0;   // 拖拽时边刚度倍率（让被拖动的牵引更明显）
 
 // 高斯模糊滤镜：给节点做同色辉光（主流量产图谱的"浮起感"来源之一）。
@@ -520,6 +557,8 @@ function initGraph(){
     n.ph = i * 2.399963;   // 黄金角散布
     // 钉住状态跟随记忆还原：摆过的节点重开/切轴后仍待在原地
     n.pinned = !!(s && s.p);
+    // 余波期截止时间：0 = 不在余波期（初始布局/还原记忆都不算）
+    n.settleUntil = 0;
   });
   alpha = 1;
   // 节点多就降档：上百个元素各自呼吸会吃帧，换成整图一个动画（开销恒定）
@@ -600,15 +639,29 @@ function neighbors(id){
 function tick(){
   const N = nodes.length;
   const drag = dragNode;
+  /* settling = 余波期（刚松手不到 SETTLE_MS），由 releaseAt 记录"上一次松手"的时刻。
+     这段时间里让惯性和碰撞演完，弹簧软化、节点不锁定。
+     两者区别很重要：
+       drag     —— 手还按着，力场全力牵引
+       settling —— 手已松开，节点要"自己演完物理"，不能被立刻拽回/钉死
+     没有这个区分，松手就会"啪"一下停住，碰撞效果也永远看不到。 */
+  const nowTs = performance.now();
+  const settling = releaseAt > 0 && (nowTs - releaseAt) < SETTLE_MS;
   /* 速度积分的灵敏度系数 f2。
      历史坑：曾写成 x += vx*alpha，而 alpha 地板 0.03 → 所有力只剩 3%，
      边弹簧等于没连，拖动时邻居完全不动。
      现在 alpha 地板改成 0（图要能完全静止），所以 f2 不能只跟 alpha 走：
        拖拽中     → 1（手感必须直接）
-       有余波时   → SENS_MIN + alpha*(1-SENS_MIN)，保证低能量下仍能滑行
+       有能量时   → SENS_MIN + alpha*(1-SENS_MIN)，保证低能量下仍能滑行
        彻底静止   → 0（配合下面"能量耗尽即清零速度"，真正停干净）
-     SENS_MIN 取 0.3：低于 0.2 会让松手后的惯性像被吸住，滑不动。 */
-  const f2 = drag ? 1 : (alpha > 0 ? (SENS_MIN + alpha * (1 - SENS_MIN)) : 0);
+     SENS_MIN 取 0.3：低于 0.2 会让松手后的惯性像被吸住，滑不动。
+     ★ 余波期例外：alpha 会被 decay 拉向 0，如果 f2 跟着 alpha 走，
+       松手 0.3 秒后 f2 就掉到 0.3 以下、0.5 秒后直接归零 —— 惯性被"吸住"，
+       观感还是接近急停。余波期改用 SETTLE_SENS 这个固定灵敏度，
+       让速度按 DAMP 自然衰减（这才是真实的惯性衰减曲线），撑满 SETTLE_MS。 */
+  const f2 = drag ? 1
+          : (settling ? SETTLE_SENS
+          : (alpha > 0 ? (SENS_MIN + alpha * (1 - SENS_MIN)) : 0));
 
   /* ---------- 1. 成对力：斥力 + 弹性碰撞（同一趟循环，O(N²) 只走一次） ---------- */
   for(let i=0;i<N;i++){
@@ -621,13 +674,53 @@ function tick(){
       if(d2 < 0.0001){ dx = (Math.random()-.5)*2; dy = (Math.random()-.5)*2; d2 = dx*dx+dy*dy; }
       const d = Math.sqrt(d2);
       const nx = dx/d, ny = dy/d;          // 单位法线：a → b
+      const contact = a.r + b.r + CONTACT_PAD;   // 接触面
 
-      // 斥力（软性，近距离封顶，避免糊成一团时的数值爆炸）
-      let f = Math.min(REPEL_K/d2, REPEL_CAP);
+      /* 斥力：软性，近距离封顶，避免糊成一团时数值爆炸。
+         ★ 两条铁律，都是为了"节点要真能碰到"：
+
+         ① 必须在接触面衰减到 0。
+            之前是纯 1/d² 无限程斥力，接触面处还有 2.25px/帧 —— 还没撞上就把邻居推开了，
+            实测拖动中两节点稳定在 137px 外，`d >= contact` 每帧成立 →
+            冲量分支一次都没进过 → 没有弹跳、没有脉冲、没有动量传递
+            （用户原话："碰撞效果在哪里呢？"）。
+            真实刚性球就是这个物理：**非接触区软斥力，接触区交给冲量**。
+
+         ② 远场必须真的弱下去，否则会顶走弹簧的平衡点。
+            LINK_REST=108 是边的理想长度，108px 处弹簧力为 0。
+            如果斥力在 100px 还有 0.26px/帧，平衡点就被推到 140px 上下，
+            而接触面才 34px —— 物理上永远碰不到。
+            所以这里用平方淡出（fade²）：远场压得很快，近场保持陡峭。
+
+         ★ 拖动时额外那点"推挤感"（DRAG_SHOVE）必须限制在接触面附近，
+           早先是无限程 +3.2，等于给每个邻居一个恒定 3.4px/帧的斥力 ——
+           这是节点永远撞不到的头号原因。改成只作用于 DRAG_SHOVE_REACH 内。 */
+      let f = 0;
+      let fade = 0;
+      if(d > contact){
+        fade = Math.min(1, (d - contact) / REPEL_FADE);
+        f = Math.min(REPEL_K/d2, REPEL_CAP) * fade * fade;   // 平方淡出：远场弱、近场陡
+      }
       // 磁性让位只给"正在拖拽"的节点，不给 hover。
       // 用户明确要求：hover 时不要动。悬停是"看"不是"碰"——
       // 一碰就推开会让鼠标永远停不到某个节点上，既点不准也读不懂。
-      if(a===drag || b===drag) f += 3.2;
+      if(a===drag || b===drag){
+        /* 拖动时的"磁性让位"：拖着节点经过时，邻居在中距离就让开一点，手感上像有磁。
+           ★ 但它绝不能妨碍碰撞 —— 这是本轮最难调的一处。
+           只做"接触面 → REACH"的单向衰减（近满远零）会失败：
+           近端满强度正好压在接触面上，d=48px 处就给邻居 1.71px/帧 的退让，
+           邻居稳态退开 11.3px/帧 > 拖动方推进 10px/帧 → 打平在 48px 外，
+           冲量分支永远进不去（实测碰撞 0 次）。
+           所以改成"中距离隆起"：接触面处为 0（让冲量接管），
+           中距离有一个峰值（保留磁性手感），远处衰减回 0（不做无限程推挤）。
+           实测：去掉推挤后碰撞 1 次 + 余波后续 4 次；改成中距离隆起后同样能撞上，
+           且拖动时仍有让位感。 */
+        const x = (d - contact) / DRAG_SHOVE_REACH;      // 0 = 贴着接触面
+        if(x > 0 && x < 1){
+          // sin 形状：两端为 0，中点最大。平滑、无导数突变，不会抖
+          f += DRAG_SHOVE * Math.sin(Math.PI * x);
+        }
+      }
       a.vx += nx*f; a.vy += ny*f;
       b.vx -= nx*f; b.vy -= ny*f;
 
@@ -637,10 +730,10 @@ function tick(){
            ① 法向相对速度为负（正在靠近）→ 施加冲量交换法向速度
            ② 恢复系数 e 决定"弹回多少"（e=0 死球，e=1 完全弹性）
            ③ 切向保留摩擦（不打滑），这是"真实感"的一半来源 */
-      const min = a.r + b.r + CONTACT_PAD;
+      const min = contact;
       if(d >= min) continue;
-      const aFree = !a.fixed && !a.pinned;
-      const bFree = !b.fixed && !b.pinned;
+      const aFree = isFree(a);
+      const bFree = isFree(b);
       if(!aFree && !bFree) continue;
 
       // 质量按面积算：半径大的节点撞起来更有份量（也是最直观的物理直觉）
@@ -656,23 +749,33 @@ function tick(){
       if(aFree){ a.x += nx*corr*(invA/invSum); a.y += ny*corr*(invA/invSum); }
       if(bFree){ b.x -= nx*corr*(invB/invSum); b.y -= ny*corr*(invB/invSum); }
 
-      // ② 法向冲量：v_n < 0 表示正在靠近，需要交换法向速度
-      //    冲量大小 j = -(1+e)·v_n / (1/m_a + 1/m_b)
+      // ② 法向冲量
+      //    ★ 符号约定（这里出过一次指数爆炸的 bug，务必看懂）：
+      //      n = (a-b)/|a-b|，指向 b→a。
+      //      相对速度必须取 v_a - v_b（不是反过来）：
+      //        闭合速度 vn = (v_a - v_b)·n，vn < 0 表示两者正在靠近。
+      //      之前写的是 rv = v_b - v_a，于是 vn < 0 变成了"正在分离"，
+      //      冲量恰好在已经分开时施加 → 每帧把 a 推得更远 → 正反馈，
+      //      实测速度 4 帧内从 7.7 涨到 138、20 帧到 3700、30 帧到 77 万 px/帧。
+      //      这个 bug 之前没暴露，是因为 pinned 节点压根不参与积分（速度算了就丢），
+      //      一旦让松手后的节点真参与积分，正反馈立刻显形。
+      //    冲量大小 j = -(1+e)·v_n / (1/m_a + 1/m_b)，vn<0 时 j>0（沿 +n 推 a = 推离 b）。
       //    被拖动的节点不参与积分（fixed），它的速度体现为指针位移，
       //    这里把位移速度并进来，拖过去撞上的力度才和手速匹配。
       const avx = a.vx + (a===drag ? a.dvx||0 : 0), avy = a.vy + (a===drag ? a.dvy||0 : 0);
       const bvx = b.vx + (b===drag ? b.dvx||0 : 0), bvy = b.vy + (b===drag ? b.dvy||0 : 0);
-      const rvx = bvx - avx, rvy = bvy - avy;
-      const vn = rvx*nx + rvy*ny;       // <0 = 接近中
+      const rvx = avx - bvx, rvy = avy - bvy;
+      const vn = rvx*nx + rvy*ny;       // <0 = 正在靠近
       if(vn < 0){
-        const jimp = -(1 + RESTITUTION) * vn / invSum;
+        const jimp = Math.min(-(1 + RESTITUTION) * vn / invSum, IMPULSE_CAP);
         if(aFree){ a.vx += jimp*nx*invA; a.vy += jimp*ny*invA; }
         if(bFree){ b.vx -= jimp*nx*invB; b.vy -= jimp*ny*invB; }
         // ③ 切向摩擦：冲量抵消一部分切向相对速度 → 擦过去会"打滑"，
-        //    这是碰撞看起来有摩擦、而不是两块玻璃相撞的关键
+        //    这是碰撞看起来有摩擦、而不是两块玻璃相撞的关键。
+        //    施加后 new_vt = vt + jt·invSum，取 jt = -μ·vt/invSum 即得 new_vt = vt(1-μ)。
         const tx = -ny, ty = nx;
         const vt = rvx*tx + rvy*ty;
-        const jt = -vt / invSum * 0.18;  // 0.18 ≈ 摩擦系数（经验值，太大像胶）
+        const jt = -vt / invSum * FRICTION;  // FRICTION ≈ 0.18，太大像胶
         if(aFree){ a.vx += jt*tx*invA; a.vy += jt*ty*invA; }
         if(bFree){ b.vx -= jt*tx*invB; b.vy -= jt*ty*invB; }
         // 撞上了给一下视觉脉冲：碰撞必须有可见反馈，否则"弹开"看着像抖动
@@ -684,8 +787,13 @@ function tick(){
 
   /* ---------- 3. 边 = 弹簧（拖动牵引的主要来源） ----------
      之前的问题是常数太小（0.018）且被 alpha 压到 3%，等于没连。
-     现在：刚度提到 0.055，并且积分不乘 alpha → 拖动时邻居被明确带着走。 */
-  const lk = LINK_K * (drag ? 2.2*DRAG_BOOST : 1);
+     现在：刚度提到 0.055，并且积分不乘 alpha → 拖动时邻居被明确带着走。
+
+     余波期（刚松手）要**软化弹簧**，否则松手瞬间速度就被边弹簧反抽掉：
+     实测间距 200px 时弹簧力 5.06，松手速度 6.6，一帧就掉 77% ——
+     观感就是"松手立刻被拽回原位"，完全没有惯性。
+     这里在余波期把刚度压到 35%，让惯性先演完，再由弹簧缓缓拉回平衡。 */
+  const lk = LINK_K * (drag ? 2.2*DRAG_BOOST : (settling ? SETTLE_LINK_SOFT : 1));
   edges.forEach(e=>{
     const a=byId[e.source], b=byId[e.target];
     if(!a||!b) return;
@@ -696,12 +804,12 @@ function tick(){
     let f=(d-LINK_REST)*lk;
     // 轴向阻尼：沿边方向的速度差会衰减，抑制"弹簧高频抖动"
     // （没有它，边会像橡皮筋一样永久振荡，看起来很假）
-    if(!a.fixed && !a.pinned && !b.fixed && !b.pinned){
+    if(isFree(a) && isFree(b)){
       const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
       f += (rvx*nx + rvy*ny) * LINK_DAMP;
     }
-    if(!a.fixed && !a.pinned){ a.vx += nx*f; a.vy += ny*f; }
-    if(!b.fixed && !b.pinned){ b.vx -= nx*f; b.vy -= ny*f; }
+    if(isFree(a)){ a.vx += nx*f; a.vy += ny*f; }
+    if(isFree(b)){ b.vx -= nx*f; b.vy -= ny*f; }
   });
 
   // 中心引力
@@ -717,7 +825,7 @@ function tick(){
   if(alpha > ALPHA_LIVE){
     for(let i=0;i<N;i++){
       const n = nodes[i];
-      if(n.fixed || n.pinned) continue;
+      if(!isFree(n)) continue;
       n.vx += (Math.random()-0.5) * 0.18;
       n.vy += (Math.random()-0.5) * 0.18;
     }
@@ -727,11 +835,39 @@ function tick(){
      f2 = 拖拽中用满速；否则用 alpha，但带一个下限 SENS_MIN。
      为什么要下限：alpha 会归零（这是"能静止"的前提），
      但如果直接 x += vx*alpha，alpha→0 时碰撞余波和松手惯性会被瞬间抹平，
-     节点看起来像被"吸住"而不是"停下"。SENS_MIN 让低能量下的运动保持可感。 */
+     节点看起来像被"吸住"而不是"停下"。SENS_MIN 让低能量下的运动保持可感。
+
+     ★ pinned 的语义修正（本轮最关键的一处）：
+       原来 `if(n.fixed || n.pinned) continue;` 让"钉住"= 永不参与积分，
+       于是拖过的节点松手后速度再大也不移动一帧 —— 观感就是"一松手立刻钉死"，
+       惯性滑行和后续碰撞全部消失（用户反馈："为啥我一松手马上就停了"）。
+       现在 pinned 只表示"余波结束后要锁在这里"，余波期内照常参与积分：
+         拖拽中 (fixed)          → 完全交给鼠标，tick 不碰它
+         余波期 (inSettle)       → 正常参与积分，惯性和碰撞都能发生
+         余波结束 (settleUntil过)→ 把当前位置写成新锚点 bx/by，之后不再被力场移动
+       这样"摆位会被记住"和"松手有惯性"就不再互相排斥。 */
+  const now = performance.now();
+  const damp = settling ? RELEASE_DAMP : DAMP;
+  let settledAny = false;              // 本帧是否有节点走完余波、正式锁定
   for(let i=0;i<N;i++){
     const n = nodes[i];
-    if(n.fixed || n.pinned) continue;
-    n.vx *= DAMP; n.vy *= DAMP;
+    if(n.fixed) continue;
+    // 余波刚结束 → 把滑到的地方定为新锚点，正式"钉住"，视觉同步
+    if(n.settleUntil && now >= n.settleUntil){
+      n.settleUntil = 0;
+      n.bx = n.x; n.by = n.y;
+      settledAny = true;
+      const el = (window.__nodeEls||[]).find(o=>o.n===n);
+      if(el) el.g.classList.add("pinned");
+    }
+    // ★ 判据必须和力学各段用同一个 isFree()，不能写 `if(n.pinned) continue`。
+    //   两者差一个"余波期内不算真钉住"，后果就是松手的节点一帧都不挪 ——
+    //   那正是"为啥我一松手马上就停了"的直接原因。
+    //   （这一处曾和碰撞/边力三处各写一遍判据，结果互相矛盾。）
+    if(!isFree(n)) continue;
+    // ★ 两段阻尼：余波期用低阻尼（惯性滑行），其余用常规阻尼（布局收敛）。
+    //   只用 DAMP=0.82 的话，松手滑行上限被压到 31px，肉眼就是"立刻停住"。
+    n.vx *= damp; n.vy *= damp;
     // 限速：防止大力拖拽/连环碰撞把节点甩飞（也是 d3 的常见做法）
     const sp = Math.hypot(n.vx, n.vy);
     if(sp > 24){ n.vx = n.vx/sp*24; n.vy = n.vy/sp*24; }
@@ -740,16 +876,24 @@ function tick(){
     n.y = Math.max(n.r, Math.min(H-n.r, n.y));
   }
   // alpha 衰减到 0 = 图完全静止。
-  // 拖动时衰减慢（0.06）：松手后邻居的余波要持续一会儿才停，手感才对。
-  // 平时衰减快（0.09）：约 45 帧（0.75 秒）内停下 —— 再慢就会让人觉得"还在动"。
-  alpha += (ALPHA_FLOOR - alpha) * (drag ? 0.06 : 0.09);
+  // 拖动中衰减慢（0.05）：松手后邻居的余波要持续一会儿才停，手感才对。
+  // 平时衰减快（0.08）：约 60 帧（1 秒）内停下 —— 再慢就会让人觉得"还在动"。
+  alpha += (ALPHA_FLOOR - alpha) * (drag ? 0.05 : 0.08);
   // 能量耗尽时把速度也清零：否则节点会以极小速度一直"贴着地板爬"，
   // 看起来还是没停干净（alpha 归零但 vx 不为 0 的经典坑）。
-  const alive = alpha > ALPHA_LIVE || !!drag;
+  // ★ 余波期例外：alpha 会在余波期内衰减到 0（这是设计要的），
+  //   但余波期还没演完，必须继续跑完 SETTLE_MS 才允许停表。
+  //   少了这个条件，调度器会在松手 0.3 秒后就判定"静止"停表 —— 惯性演到一半被冻住。
+  const alive = alpha > ALPHA_LIVE || !!drag || settling;
   if(!alive){
     nodes.forEach(n=>{ n.vx = 0; n.vy = 0; });
     alpha = 0;      // 硬归零：避免残留一个极小值导致下一帧又续排
   }
+  // ★ 摆位记忆要等"余波真正演完"再落盘。
+  //   之前在 dragEnd 里就调 savePositions()，那时节点还在惯性滑行途中 ——
+  //   存下来的是松手瞬间的位置，比最终静止点差了 100~200px，
+  //   于是"刷新后节点跳回半路"。改成余波结束才存。
+  if(settledAny) savePositions();
   // svg.moving 统管所有"持续性动效"（呼吸 / 桥接流动 / lite 起伏）。
   // 静止时整批关掉 —— 这是"静止 = 完全不动"的最后一块拼图。
   if(alive !== _wasAlive){ svg.classList.toggle("moving", alive); _wasAlive = alive; }
@@ -882,21 +1026,30 @@ function dragEnd(){
   // 交出手上的那一刻把速度"扔"给节点：松手后它应该顺着拖拽方向继续滑一小段，
   // 再被邻居的碰撞/边弹簧拦住。这是"物体有惯性"的关键体感，
   // 直接钉死的话观感就是"贴片被按在屏幕上"。
+  // ★ 必须先取出来再清零：dvx/dvy 是 dragMove 记的"这一帧鼠标移了多少"，
+  //   在这行清零的话下面读到的永远是 0 → 松手速度恒为 0 → 又变回"立刻停住"。
+  const handVx = n.dvx || 0, handVy = n.dvy || 0;
+  n.dvx = 0; n.dvy = 0;
   if(dragMoved){
-    n.vx = Math.max(-18, Math.min(18, (n.dvx||0) * 0.55));
-    n.vy = Math.max(-18, Math.min(18, (n.dvy||0) * 0.55));
-    // 摆过位 = 用户要它待在这：钉住 + 记忆，放手后被力场拉不回去
+    n.vx = Math.max(-18, Math.min(18, handVx * RELEASE_KEEP));
+    n.vy = Math.max(-18, Math.min(18, handVy * RELEASE_KEEP));
+    // 摆过位 = 用户要它待在这：钉住 + 记忆。
+    // 但"钉住"是余波**之后**才生效的结论，不是松手瞬间就生效的状态 ——
+    // 此刻先进入余波期（settleUntil），期间它照常参与物理，惯性演完再锁。
     n.pinned = true;
-    n.bx = n.x; n.by = n.y;
+    n.settleUntil = performance.now() + SETTLE_MS;
+    // 视觉上"已摆好"的标记要等余波结束再加（tick 里补），
+    // 现在加会让用户以为"放下去就被钉住了"，正好是要避免的观感。
     const el = (window.__nodeEls || []).find(o => o.n === n);
+    if(el) el.g.classList.remove("pinned");
+    // 吸附回弹一下：让"放手"有落定的实感，而不是啪一下停死
     if(el){
-      el.g.classList.add("pinned");
-      // 吸附回弹一下：让"放手"有落定的实感，而不是啪一下停死
       el.g.classList.remove("snap");
       void el.g.getBoundingClientRect();
       el.g.classList.add("snap");
     }
-    savePositions();
+    // 摆位记忆不在这里落盘：此刻节点还在惯性滑行，存的是松手点而非最终静止点。
+    // 真正的 savePositions() 放在 tick 里"余波结束"那一帧（见 settledAny）。
   } else {
     openCard(n);
   }
@@ -904,9 +1057,13 @@ function dragEnd(){
   window.__nodeEls.forEach(({g})=>g.classList.remove("dragging"));
   svg.classList.remove("dragging");
   applyHighlight();
-  // 松手后给一点余波能量，让惯性滑行和碰撞余震播完（约 1 秒）再停。
-  // 这里不能 wake() 到高能量：余波只是"停下来之前的那一下"，不是"继续动"。
-  if(dragMoved) wake(0.18);
+  // 松手后给足余波能量，让惯性滑行和后续碰撞播完（SETTLE_MS）再停。
+  // 这里不能 wake() 到 ALPHA_DRAG：余波只是"停下来之前的那一下"，
+  // 能量太高会让整张图看起来又活起来了（和"静止才可点"的产品原则冲突）。
+  if(dragMoved){
+    releaseAt = performance.now();
+    wake(ALPHA_RELEASE);
+  }
 }
 
 function bindNode(g, n){
