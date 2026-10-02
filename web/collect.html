@@ -28,6 +28,15 @@
   .item .m{font-size:12px; color:var(--faint); margin-top:4px}
   .desktop-only,.share-hint{margin-top:34px; padding:14px; background:var(--surface);
     border:1px dashed var(--line); border-radius:var(--r-lg)}
+  .batch-row{display:flex; gap:10px; align-items:center; margin-top:10px}
+  .batch-row input[type=file]{flex:1; font-size:12px; color:var(--muted)}
+  #batchText{width:100%; box-sizing:border-box; min-height:88px}
+  #btnBatch{flex:none; white-space:nowrap}
+  details.batch summary{cursor:pointer; list-style:none}
+  details.batch summary::-webkit-details-marker{display:none}
+  details.batch summary::after{content:"+"; float:right; color:var(--faint); font-weight:400}
+  details.batch[open] summary::after{content:"–"}
+  details.batch[open] .sec-note{margin-top:10px}
   .desktop-only h3{font-size:13px; margin:0 0 8px; color:var(--muted); font-weight:500}
   .desktop-only a{color:var(--accent); text-decoration:none; font-size:14px;
     border:1px solid var(--accent-line); border-radius:var(--r); padding:6px 12px; display:inline-block}
@@ -51,6 +60,19 @@
 </div>
 <button class="collect" id="btn">收藏</button>
 <div class="hint">支持 GitHub / GitLab 仓库、抖音视频链接，以及网页 / 文章链接（自动抓取标题与正文并萃取）。复制即收藏，分析在后台跑，不打断你。</div>
+
+<div class="list" id="batchSec">
+  <details class="card batch">
+    <summary class="sec-h">批量导入</summary>
+    <div class="sec-note">冷启动用：把浏览器导出的书签 HTML、GitHub Stars 页面、或一堆链接粘进来——只认 GitHub / GitLab 仓库地址，普通网页不收，免得制造垃圾卡片。收好后逐条在后台出卡。</div>
+    <textarea id="batchText" placeholder="https://github.com/owner/repo&#10;https://github.com/another/repo"></textarea>
+    <div class="batch-row">
+      <input type="file" id="batchFile" accept=".html,.htm,.txt">
+      <button class="muted" id="btnBatch">开始导入</button>
+    </div>
+    <div class="hint" id="batchMsg"></div>
+  </details>
+</div>
 
 <div class="list">
   <div class="card">
@@ -132,6 +154,42 @@ document.getElementById('btn').addEventListener('click',function(){
     "body:JSON.stringify({url:u,source:'bookmark'})}).then(function(r){return r.json()}).then(function(d){" +
     "alert(d.ok?(d.dup?'已收藏过':'已收藏'):'失败: '+(d.error||''))})})();";
   el.setAttribute('href', 'javascript:' + js);
+})();
+
+// ---- 批量导入：书签 HTML / Stars 文本 / 粘贴链接 → 抽仓库地址 → 逐条入库 ----
+(function wireBatchImport(){
+  var textEl=document.getElementById('batchText'),
+      fileEl=document.getElementById('batchFile'),
+      btn=document.getElementById('btnBatch'),
+      msg=document.getElementById('batchMsg');
+  if(!btn) return;
+  fileEl.addEventListener('change', function(){
+    var f=fileEl.files && fileEl.files[0];
+    if(!f) return;
+    var rd=new FileReader();
+    rd.onload=function(){ textEl.value=String(rd.result||''); msg.textContent='已读入 '+f.name+'，点「开始导入」。'; };
+    rd.readAsText(f);
+  });
+  btn.addEventListener('click', function(){
+    var text=textEl.value;
+    if(!text.trim()){ msg.textContent='先粘贴链接或选书签文件。'; return; }
+    btn.disabled=true; msg.textContent='导入中…';
+    fetch('/api/import/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({text:text})})
+      .then(function(r){return r.json()})
+      .then(function(d){
+        btn.disabled=false;
+        if(!d.ok){ msg.textContent='失败：'+(d.error||''); return; }
+        var lines=['识别 '+d.found+' 个仓库：新收 '+d.new+'、已收藏过 '+d.dup+'、失败 '+d.failed+'。'];
+        if(d.new>0) lines.push('新收的正在后台出卡，去卡片页看进度。');
+        if(d.failed>0 && d.fail_list && d.fail_list.length)
+          lines.push('失败示例：'+d.fail_list[0].url+'（'+d.fail_list[0].error+'）');
+        msg.textContent=lines.join(' ');
+        if(d.new>0) loadItems();
+        textEl.value=''; fileEl.value='';
+      })
+      .catch(function(){ btn.disabled=false; msg.textContent='网络异常，重试一次。'; });
+  });
 })();
 
 loadItems();

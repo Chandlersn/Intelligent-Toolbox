@@ -428,10 +428,26 @@ def _fail_cached(domain):
     RECOMMEND_CACHE[domain] = (time.time() - (RECOMMEND_TTL - 60), [])
 
 
+def gh_token():
+    """生效的 GitHub token：应用内配置（app_settings）优先，其次环境变量。
+
+    为什么要应用内配置：token 属敏感凭据，写进环境变量要改启动脚本/系统设置，
+    对非命令行用户不友好；DB 里的 app_settings 由 settings 页写入，即时生效。
+    """
+    try:
+        conn = db.connect()
+        t = db.get_settings(conn, "github_token") or ""
+        conn.close()
+    except Exception:
+        t = ""
+    return (t or config.GITHUB_TOKEN or "").strip()
+
+
 def _github_headers():
     h = {"User-Agent": "repo-collector", "Accept": "application/vnd.github+json"}
-    if config.GITHUB_TOKEN:
-        h["Authorization"] = "Bearer " + config.GITHUB_TOKEN
+    tok = gh_token()
+    if tok:
+        h["Authorization"] = "Bearer " + tok
     return h
 
 
@@ -1311,6 +1327,75 @@ def collect_payload(url, note, source="manual"):
     return (200, body)
 
 
+# ── 批量导入（冷启动）：浏览器书签 / GitHub Star 列表 / 粘贴文本 → 仓库收藏 ──
+
+IMPORT_MAX = 300  # 单次导入上限：防误粘整本书拖垮服务；真有大库可分批
+# GitHub/GitLab 站内的「非仓库页」（topics/explore 等），它们的路径也有两段，需排除
+_IMPORT_RESERVED = {
+    "topics", "explore", "features", "trending", "marketplace", "collections",
+    "settings", "notifications", "orgs", "organizations", "sponsors", "about",
+    "pricing", "site", "security", "enterprise", "customer-stories", "search",
+    "login", "join", "new", "import", "watching", "dashboard", "account",
+}
+
+
+def extract_repo_urls(text):
+    """从粘贴文本 / 书签 HTML 里抽全部 GitHub/GitLab 仓库地址（去重保序）。
+
+    只收生产端仓库 —— 批量导入的目标是给智能层喂样本；书签里的普通网页
+    （搜索引擎、门户、文章页）收进来只会制造垃圾卡片，宁可少收不收错。
+    """
+    out, seen = [], set()
+    for m in REPO_URL_RE.findall(text or ""):
+        u = m.rstrip(r""".,;:!?)'\]}>。，；：、""")
+        u = u.split("?")[0].split("#")[0].rstrip("/")
+        if u.lower().endswith(".git"):
+            u = u[:-4]
+        kind_path = valid_repo_url(u)
+        if not kind_path:
+            continue
+        path = kind_path[1]                      # /owner/repo（valid_repo_url 已截断深路径）
+        owner = path.strip("/").split("/")[0].lower()
+        if owner in _IMPORT_RESERVED:
+            continue
+        norm = "https://" + ("gitlab.com" if kind_path[0] == "gitlab" else "github.com") + path
+        if norm.lower() in seen:
+            continue
+        seen.add(norm.lower())
+        out.append(norm)
+        if len(out) >= IMPORT_MAX:
+            break
+    return out
+
+
+def import_bookmarks(payload):
+    """批量导入：抽取地址 → 逐条 collect_payload。收集同步、分析异步（worker 有界并发）。
+
+    返回三类清单：new（新入库，排队出卡）/ dup（已收藏过，幂等跳过）/ failed（失败原因）。
+    """
+    text = payload.get("text") or ""
+    if not text.strip():
+        return (400, {"ok": False, "error": "没有可导入的内容"})
+    urls = extract_repo_urls(text)
+    if not urls:
+        return (400, {"ok": False,
+                      "error": "未识别出 GitHub / GitLab 仓库地址（普通网页链接不收）"})
+    new_list, dup_list, fail_list = [], [], []
+    for u in urls:
+        try:
+            code, body = collect_payload(u, "", source="import")
+            if code == 200 and body.get("ok"):
+                (dup_list if body.get("dup") else new_list).append(u)
+            else:
+                fail_list.append({"url": u, "error": (body or {}).get("error") or ("http %d" % code)})
+        except Exception as e:  # 单条失败不拖垮整批
+            fail_list.append({"url": u, "error": str(e)[:120]})
+    return (200, {"ok": True, "found": len(urls), "new": len(new_list),
+                  "dup": len(dup_list), "failed": len(fail_list),
+                  "new_list": new_list, "dup_list": dup_list,
+                  "fail_list": fail_list[:20]})
+
+
 def regenerate_card(rid, timeout=None):
     """重算某仓库卡片。返回 (http_code, body)。
 
@@ -1647,7 +1732,7 @@ def doctor():
         },
         "transcribe": transcribe,
         "github": {
-            "token": bool(config.GITHUB_TOKEN),
+            "token": bool(gh_token()),
             "rate_limited": _RATE_STATE["limited"],
             "limit_at": _RATE_STATE["at"],
             "remaining": _RATE_STATE["remaining"],
@@ -1660,9 +1745,10 @@ def doctor():
 #  静态文件
 # ═══════════════════════════════════════════════════════════════════
 def get_settings_resp():
-    """读 app_settings 返回可编辑的模型配置。api_key 打码（sk-***ab）下发给前端。"""
+    """读 app_settings 返回可编辑的配置。token/key 一律打码下发，不回传明文。"""
     conn = db.connect()
     api_key = db.get_settings(conn, "llm_api_key") or ""
+    gh_tok = db.get_settings(conn, "github_token") or ""
     resp = {
         "ok": True,
         "llm": {
@@ -1671,6 +1757,12 @@ def get_settings_resp():
             "api_key": _mask_key(api_key),
             "model": db.get_settings(conn, "llm_model") or "",
             "has_key": bool(api_key),
+        },
+        "github": {
+            "token": _mask_key(gh_tok),
+            "has_token": bool(gh_tok or config.GITHUB_TOKEN),
+            # token 来自哪个来源：settings（应用内）/ env（环境变量）/ none
+            "source": "settings" if gh_tok else ("env" if config.GITHUB_TOKEN else "none"),
         },
     }
     conn.close()
@@ -1686,7 +1778,7 @@ def _mask_key(k):
 
 
 def save_settings(payload):
-    """写模型配置到 app_settings。前端回传的掩码 key 不得覆盖真实 key。"""
+    """写配置到 app_settings。前端回传的掩码 key/token 不得覆盖真实值。"""
     llm = payload.get("llm") or {}
     conn = db.connect()
     db.set_settings(conn, "llm_enable", "1" if llm.get("enable") else "0")
@@ -1699,6 +1791,16 @@ def save_settings(payload):
         # 掩码回传 = 未改 key，保留现有值（不覆盖）
     else:
         db.set_settings(conn, "llm_api_key", "")
+    # GitHub token：与 llm_api_key 同一套掩码规则；清空=删除应用内值（回落环境变量）。
+    # 只在 payload 显式带 github 键时才动它 —— LLM 单独保存时不能误清。
+    if "github" in payload:
+        gh = payload.get("github") or {}
+        new_tok = (gh.get("token") or "").strip()
+        if new_tok:
+            if "***" not in new_tok:
+                db.set_settings(conn, "github_token", new_tok)
+        else:
+            db.set_settings(conn, "github_token", "")
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -2128,6 +2230,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, save_settings(payload))
             return
+        if p == "/api/import/bookmarks":
+            guard = self._write_guard(same_origin_required=True)
+            if guard:
+                self._send(*guard)
+                return
+            payload, err = self._read_json()
+            if err != 200:
+                self._send(err, {"ok": False,
+                                 "error": "bad json" if err == 400 else "body too large"})
+                return
+            self._send(*import_bookmarks(payload))
+            return
         if p != "/collect":
             self._send(404, {"error": "not found"})
             return
@@ -2205,8 +2319,8 @@ def main():
         if config.HOST not in ("127.0.0.1", "localhost", "::1"):
             print("  ⚠ 安全：正在监听 %s 且未设口令 —— 局域网内任何人都能访问、增删你的收藏。" % config.HOST)
             print("    建议：REPO_TOKEN=某随机串 启动，或在手机端 localStorage.setItem('repo_token','同值')。")
-    if not config.GITHUB_TOKEN:
-        print("  提示：未配置 REPO_GITHUB_TOKEN，GitHub 搜索限速 10 次/分")
+    if not gh_token():
+        print("  提示：未配置 GitHub token（设置页或 REPO_GITHUB_TOKEN），GitHub 请求限速 60 次/时")
     # 双栈监听：既响应 127.0.0.1 / localhost(IPv4)，也响应 ::1(localhost 常被解析成 IPv6)。
     # 否则 WebView2 壳把 localhost 解析到 ::1 时会拒绝连接。
     bind_host, bind_family = bind_addr()

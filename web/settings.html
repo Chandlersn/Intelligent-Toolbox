@@ -138,6 +138,18 @@
     <div class="row-info"><span class="k">数据库</span><span class="v" id="dbInfo">读取中…</span></div>
   </section>
 
+  <section class="sec">
+    <div class="sec-h">GitHub 接入</div>
+    <p class="sec-d">配一个 GitHub token（只读权限就够），仓库元数据、更新检查的限额从 60 次/时提到 5000 次/时。在 GitHub → Settings → Developer settings → Personal access tokens 生成。</p>
+
+    <div class="g">
+      <div class="gk">Token <span class="opt-hint" id="ghState">读取中…</span></div>
+      <input class="inp" id="ghToken" type="password" placeholder="ghp_... 或 github_pat_..." autocomplete="off">
+    </div>
+    <button class="abtn" id="saveGH">保存 GitHub Token</button>
+    <div class="msg" id="ghMsg"></div>
+  </section>
+
 </div>
 
 <script src="/nav.js"></script>
@@ -240,6 +252,38 @@ document.getElementById('saveLLM').addEventListener('click', function(){
       loadDbSize();
     }else{ lnote((d.error||'保存失败'),'err'); }
   }).catch(function(){ lnote('保存失败：连不上服务。','err'); });
+});
+
+// ---- GitHub 接入：token 保存与状态显示 ----
+var ghMsg=document.getElementById('ghMsg');
+function gnote(t,cls){ ghMsg.className='msg '+(cls||''); ghMsg.textContent=t; }
+var ghTokenEl=document.getElementById('ghToken'), ghState=document.getElementById('ghState');
+
+function renderGhState(d){
+  var g=d.github||{};
+  if(g.source==='settings') ghState.textContent='已在应用内配置（'+(g.token||'')+'）';
+  else if(g.source==='env') ghState.textContent='来自环境变量 REPO_GITHUB_TOKEN';
+  else if(g.has_token) ghState.textContent='已配置';
+  else ghState.textContent='未配置（限速 60 次/时）';
+  if(g.source==='settings' && g.token) ghTokenEl.value=g.token;
+}
+fetch('/api/settings').then(function(r){return r.json()}).then(renderGhState).catch(function(){});
+
+document.getElementById('saveGH').addEventListener('click', function(){
+  var tok=ghTokenEl.value.trim();
+  if(tok && tok.indexOf('***')<0 && tok.length<20){
+    gnote('这个 token 看起来太短，检查一下是否复制完整。','err'); return;
+  }
+  fetch('/api/settings', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ github:{ token:tok } })
+  }).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){
+      gnote(tok ? '已保存，即时生效。' : '已清除应用内 token（若配了环境变量仍会生效）。','ok');
+      fetch('/api/settings').then(function(r){return r.json()}).then(renderGhState).catch(function(){});
+    }else{ gnote((d.error||'保存失败'),'err'); }
+  }).catch(function(){ gnote('保存失败：连不上服务。','err'); });
 });
 
 loadDbSize();
