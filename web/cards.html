@@ -706,17 +706,39 @@ function focusCard(id){
     setTimeout(function(){ focusCard(id); }, 350);
     return;
   }
+  _curFocusId = String(id);   // 记住当前高亮：列表重建后恢复用
   document.querySelectorAll('.card.focus').forEach(function(c){ c.classList.remove('focus'); });
   el.classList.add('focus');
   el.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 // 从其它页跳来（?focus=<id>）定位到指定卡片：只消费一次，避免随后的 8s 轮询反复滚动
+var _curFocusId='';  // 当前带描边框的卡片 id：轮询重建列表后恢复高亮（不滚动）
 function maybeFocus(){
-  if(!_focusId) return;
-  var id = _focusId; _focusId = '';
-  focusCard(id);
+  if(_focusId){ var id=_focusId; _focusId=''; focusCard(id); return; }
+  if(!_curFocusId) return;
+  var el=document.getElementById('card-'+_curFocusId);
+  if(el && !el.classList.contains('focus')){
+    document.querySelectorAll('.card.focus').forEach(function(c){ c.classList.remove('focus'); });
+    el.classList.add('focus');
+  }
 }
+
+// 高亮跟随点击：进来时 ?focus= 定位的那张卡带了描边框，之后点别的卡片，
+// 框要跟着挪过去，而不是永远钉在第一张上。事件委托绑一次，列表重建也有效。
+(function wireFocusFollow(){
+  var wrap = document.getElementById('wrap');
+  if(!wrap) return;
+  wrap.addEventListener('click', function(e){
+    if(e.target.closest('a')) return;               // 链接点击本来就要跳走，不抢焦点
+    var card = e.target.closest('.card');
+    if(!card || !wrap.contains(card)) return;
+    if(card.classList.contains('focus')) return;    // 已高亮，无需动
+    _curFocusId = card.getAttribute('data-id') || '';
+    document.querySelectorAll('.card.focus').forEach(function(c){ c.classList.remove('focus'); });
+    card.classList.add('focus');
+  });
+})();
 
 // 备注：保留反馈相关 API 以兼容画像页的「你的反馈」统计；卡片页不再设置反馈
 
