@@ -83,6 +83,18 @@ fn forward_to_collector(raw: &str) {
 }
 
 fn main() {
+    // 固定 WebView2 用户数据目录（在 Tauri 初始化前设置）：
+    // 1) 不依赖启动方式（双击 / 发送到 / 深链），档案位置恒定；
+    // 2) 规避 Windows 11「管理员保护」下提权进程写默认 AppData 档案失败的问题
+    //    （tauri-apps/tauri#13926 的官方缓解方案）。
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().into_os_string());
+        let dir = std::path::Path::new(&base).join("repo-collector-shell");
+        let _ = std::fs::create_dir_all(&dir);
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
+    }
+
     // 命令行直达：「收藏箱」支持被系统「发送到」快捷方式或脚本以 URL / 深链调用，
     // 启动时把第一个参数直接甩给收集器，再照常弹出常驻悬浮球。
     for arg in std::env::args().skip(1) {
