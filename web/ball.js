@@ -170,35 +170,46 @@
       });
     }, 2000);
 
-    var downPos = null, dragging = false, startDragging_ = false;
+    var downPos = null, dragging = false, moved_ = false;
+    var startScreen = null, winOrigin = null;
 
     ball.addEventListener("mousedown", function (e) {
-      // 不在这里直接 startDragging：系统移动循环会吞掉后续 mouseup，
-      // 点按就死了。改为移动超阈值才进入拖拽，点按留给 mouseup。
+      // 不用系统 startDragging（透明 WebView2 窗口上实测无效），
+      // 改为手动拖拽：记录起点，pointermove 里 setPosition 跟随。
       var w = curWin();
-      if (!w || !w.startDragging) return;
-      downPos = { x: e.clientX, y: e.clientY };
-      startDragging_ = false;
+      if (!w || !w.setPosition) return;
+      startScreen = { x: e.screenX, y: e.screenY };
+      winOrigin = null;
+      moved_ = false;
       dragging = true;
       try { ball.setPointerCapture(e.pointerId); } catch (err) {}
     });
 
     ball.addEventListener("pointermove", function (e) {
-      if (!dragging || startDragging_) return;
-      var dx = e.clientX - downPos.x, dy = e.clientY - downPos.y;
-      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
-      startDragging_ = true;
-      try {
+      if (!dragging) return;
+      var dx = e.screenX - startScreen.x, dy = e.screenY - startScreen.y;
+      if (!moved_ && Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      var w = curWin();
+      if (!w) return;
+      if (!moved_) {
+        moved_ = true;
         probe({ probe: "drag-start" });
-        curWin().startDragging(); // 进入系统移动循环，窗口（球）跟随鼠标
+        w.outerPosition().then(function (p) {
+          winOrigin = { x: p.x, y: p.y };
+        });
+        return;
+      }
+      if (!winOrigin) return; // 等起点坐标回来
+      var dpr = window.devicePixelRatio || 1; // screenX 是 CSS 像素，位置是物理像素
+      try {
+        w.setPosition(Phys(Math.round(winOrigin.x + dx * dpr), Math.round(winOrigin.y + dy * dpr)));
       } catch (err) {}
     });
 
-    ball.addEventListener("mouseup", function () {
+    ball.addEventListener("pointerup", function () {
       if (!dragging) return;
       dragging = false;
-      if (startDragging_) {
-        startDragging_ = false;
+      if (moved_) {
         var w = curWin();
         if (w) {
           try {
@@ -208,13 +219,11 @@
             });
           } catch (err) {}
         }
-        // 拖拽后的 mouseup 往往被系统循环吞掉，走不到这里；位置由定时探针兜底
       }
-      // 点按不在这里开页面：click 事件总会跟着 mouseup 一起来，由 click 统一处理，避免双开
     });
     ball.addEventListener("click", function () {
-      // 点按入口：click 只在"未拖动"时触发（系统拖拽循环会吞掉 click）
-      if (!dragging && !startDragging_) { probe({ probe: "tap-click" }); openMainPage(); }
+      // 点按入口：手动拖拽不再吞事件，click 只在未拖动时触发
+      if (!dragging && !moved_) { probe({ probe: "tap-click" }); openMainPage(); }
     });
 
     // 拖入链接直接收藏
