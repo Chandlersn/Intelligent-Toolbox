@@ -108,18 +108,13 @@
   .node.near circle{ stroke-opacity:.55; }
   .node:hover{ transform:scale(1.22); }
   .edge.hot{ stroke-width:2.4; opacity:.95; }
-  /* 入场：半径从 0 弹出。随后是否持续"呼吸"，取决于图有没有能量 ——
-     见下方 svg.moving。静止的图不该一直起伏（用户原话："我都没法选中节点，就一直动"），
-     呼吸只在你拖动/余波期间出现，停下来就彻底不动。 */
+  /* 静止 = 彻底静止：节点是安静的圆点，生命感来自「有目的」的交互
+     （hover 聚焦缩放 / 选中 ping / 碰撞 squash / 拖拽 dragPulse / 吸附 snap）
+     和相机（缩放 · 平移 · 切轴缓动重排），而不是全员永动。
+     之前这里给每个静止节点挂了无限 breathe 脉动 —— 正是用户吐槽的
+     "一直动、没法选中、像果冻" 的根源（对照 lantern：它静止时节点完全静止，
+     动的全是相机与聚焦）。 */
   .node .core{ transform-box:fill-box; transform-origin:center; }
-  /* 呼吸：只给"完全静止"的图一点生命感。运动中必须关掉（见下方 svg.moving 覆盖），
-     否则节点一边平移一边缩放，看着像果冻在抖，而不是实心球在动（用户："动效真的差"）。
-     呼吸幅度 1.18：r≈7 的小节点约 1.3px，r≈19 的大节点约 3.4px；相位按黄金角错开。 */
-  .node .core{ animation: breathe var(--bd,5.2s) ease-in-out var(--d,0s) infinite; }
-  @keyframes breathe{ 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.18) } }
-  /* 运动中：普通节点关掉呼吸（被拖的节点由 .node.dragging .core 的 dragPulse 接管，
-     发生碰撞的节点由下方 squash 接管）。这样"运动 = 实心球平移"，不是"果冻缩放"。 */
-  svg.moving .node:not(.dragging) .core{ animation: none; }
   /* 撞击挤压：碰撞那一瞬节点被压扁再弹回 —— 这才是"弹性球"的体感，不是永远在呼吸。
      只在运动中、且发生碰撞(ping)的节点上触发；普通节点运动时不缩放。 */
   @keyframes squash{ 0%{transform:scale(1)} 28%{transform:scale(1.24,.8)} 60%{transform:scale(.9,1.1)} 100%{transform:scale(1)} }
@@ -558,6 +553,11 @@ function initGraph(){
   // 清空（连同 defs 一起没了，所以紧接着重建滤镜）
   while(svg.firstChild) svg.removeChild(svg.firstChild);
   ensureDefs();
+  // 相机层：所有边 + 节点都挂到 camG 下，缩放 / 平移只改 camG 的 transform，
+  // 物理世界坐标完全不动 —— 与 lantern 的 layout(tx/ty/k) 同一思路。
+  camG = document.createElementNS(NS, "g");
+  camG.setAttribute("id", "camera");
+  svg.appendChild(camG);
   // 初始化位置：有记忆就还原，没有再随机散开
   const saved = loadPositions();
   nodes.forEach((n,i)=>{
@@ -590,7 +590,7 @@ function initGraph(){
     // 归一化路径长度到 1，入场生长动画就能用 0→1 的 dashoffset，与实际弧长无关
     p.setAttribute("pathLength","1");
     p.style.setProperty("--d", (i*26) + "ms");
-    svg.appendChild(p);
+    camG.appendChild(p);
     return {el:p, e};
   });
   // 建节点
@@ -632,7 +632,7 @@ function initGraph(){
     }
     pos.appendChild(t);
     g.appendChild(pos);
-    svg.appendChild(g);
+    camG.appendChild(g);
     bindNode(g, n);
     return {g, pos, c, t, n};
   });
@@ -642,6 +642,7 @@ function initGraph(){
   alpha = 1;
   _wasAlive = false;   // 强制下一帧重设 moving 类
   svg.classList.add("moving");
+  fitView(false);      // 相机自适应铺满：切轴 / 重置 / 初次加载都从「整图恰好入画」开始
   loop();
 }
 
@@ -1023,6 +1024,44 @@ function pingNode(n){
    分开绑 mousemove 的话，鼠标一拖出图框就断了，松手也检测不到，
    节点会卡在 fixed 状态变成"拖不动的死点"。 */
 let dragNode = null, dragMoved = false, hoverNode = null;
+// 相机：把「物理世界坐标」映射到屏幕。缩放 / 平移全走它，物理完全不感知视图。
+//   对照 lantern：它的图谱靠同一套 layout(tx/ty/k) 做缩放、平移、打开检查器时整图缓动重排 ——
+//   这是「图谱像活地图」的核心，我之前缺的就是这层。
+let cam = { tx:0, ty:0, k:1 }, camG = null, panning = false, panStart = null;
+function applyCam(){ if(camG) camG.setAttribute("transform",
+  "translate("+cam.tx.toFixed(1)+","+cam.ty.toFixed(1)+") scale("+cam.k.toFixed(4)+")"); }
+function screenToWorld(px, py){ const r = svg.getBoundingClientRect();
+  return { x:(px - r.left - cam.tx)/cam.k, y:(py - r.top - cam.ty)/cam.k }; }
+// 让整图缓动地填满视口（切轴 / 重置 / 初次加载都走它，给「整图重排」的满足感）
+function fitView(animated){
+  if(!nodes.length) return;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  nodes.forEach(n=>{ const r=n.r||8;
+    if(n.x-r<minX)minX=n.x-r; if(n.y-r<minY)minY=n.y-r;
+    if(n.x+r>maxX)maxX=n.x+r; if(n.y+r>maxY)maxY=n.y+r; });
+  const r = svg.getBoundingClientRect();
+  const Wv = r.width, Hv = r.height, pad = 46;
+  const bw = Math.max(1, maxX-minX), bh = Math.max(1, maxY-minY);
+  let k = Math.min((Wv-pad*2)/bw, (Hv-pad*2)/bh);
+  k = Math.max(0.35, Math.min(3.2, k));
+  const cxw=(minX+maxX)/2, cyw=(minY+maxY)/2;
+  easeCam({ tx: Wv/2 - cxw*k, ty: Hv/2 - cyw*k, k }, animated?440:0);
+}
+function easeCam(to, dur){
+  if(!dur){ cam.tx=to.tx; cam.ty=to.ty; cam.k=to.k; applyCam(); return; }
+  const from={tx:cam.tx,ty:cam.ty,k:cam.k}, t0=performance.now();
+  const ease=x=> x<0.5 ? 2*x*x : 1-Math.pow(-2*x+2,2)/2;
+  (function step(){ const p=Math.min(1,(performance.now()-t0)/dur), e=ease(p);
+    cam.tx=from.tx+(to.tx-from.tx)*e; cam.ty=from.ty+(to.ty-from.ty)*e; cam.k=from.k+(to.k-from.k)*e;
+    applyCam(); if(p<1) requestAnimationFrame(step); })();
+}
+function zoomAt(sx, sy, f){
+  const r = svg.getBoundingClientRect();
+  const wx=(sx - r.left - cam.tx)/cam.k, wy=(sy - r.top - cam.ty)/cam.k;
+  const nk = Math.max(0.35, Math.min(3.2, cam.k*f));
+  cam.tx = (sx - r.left) - wx*nk; cam.ty = (sy - r.top) - wy*nk; cam.k = nk;
+  applyCam();
+}
 
 function startDrag(n){
   dragNode = n; dragMoved = false;
@@ -1040,11 +1079,12 @@ function startDrag(n){
 }
 function dragMove(cx, cy){
   if(!dragNode) return;
-  const r = svg.getBoundingClientRect();
-  // 夹在画布内：原来的边界夹取写在 tick 的积分步里，而积分步跳过 fixed 节点，
+  // cx/cy 是屏幕坐标，先翻回世界坐标（相机缩放/平移后，拖拽点必须对得上实物）
+  const w = screenToWorld(cx, cy);
+  // 夹在世界边界内：原来的边界夹取写在 tick 的积分步里，而积分步跳过 fixed 节点，
   // 于是拖出去的节点能停在图外（甚至拖不回来）。
-  const x = Math.max(dragNode.r, Math.min(W - dragNode.r, cx - r.left));
-  const y = Math.max(dragNode.r, Math.min(H - dragNode.r, cy - r.top));
+  const x = Math.max(dragNode.r, Math.min(W - dragNode.r, w.x));
+  const y = Math.max(dragNode.r, Math.min(H - dragNode.r, w.y));
   if(Math.abs(x - dragNode.x) > 3 || Math.abs(y - dragNode.y) > 3) dragMoved = true;
   // 记录拖拽速度：被拖节点自身不参与积分，但邻居要感受到"被快速甩过"，
   // 这个速度用来给碰撞一个额外的冲击分量（拖过去撞上的力度才够）。
@@ -1135,9 +1175,33 @@ function bindNode(g, n){
   });
 }
 // move/up 挂 window：拖出 svg 范围仍跟手（配合 setPointerCapture 更稳）
-window.addEventListener("pointermove", e=>dragMove(e.clientX, e.clientY));
+window.addEventListener("pointermove", e=>{
+  // 平移优先：在空白处按住拖动 = 移动相机（挪整张图），与拖节点互斥
+  if(panning){
+    cam.tx = panStart.tx + (e.clientX - panStart.x);
+    cam.ty = panStart.ty + (e.clientY - panStart.y);
+    applyCam();
+    return;
+  }
+  dragMove(e.clientX, e.clientY);
+});
 window.addEventListener("pointerup", dragEnd);
-window.addEventListener("pointercancel", dragEnd);
+window.addEventListener("pointercancel", ()=>{ panning = false; dragEnd(); });
+window.addEventListener("pointerup", ()=>{ panning = false; });
+// 滚轮缩放：以光标为锚点放大看细节（与 lantern 的 wheel 处理同一思路）
+svg.addEventListener("wheel", e=>{
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 0.89);
+}, {passive:false});
+// 在空白处按下 = 开始平移；点到节点则交给节点自己的拖拽处理
+svg.addEventListener("pointerdown", e=>{
+  if(e.target.closest && e.target.closest(".node")) return;
+  if(e.pointerType === "mouse" && e.button !== 0) return;
+  e.preventDefault();
+  try { svg.setPointerCapture(e.pointerId); } catch(_){}
+  panning = true;
+  panStart = { x:e.clientX, y:e.clientY, tx:cam.tx, ty:cam.ty };
+});
 function showTip(n, e){
   const ax = AXES.find(a => a.key === curAxis) || AXES[0];
   const kindTxt = (n.kind==='cognition') ? '认知端（抖音等）' : '生产端（仓库）';
@@ -1224,9 +1288,10 @@ document.getElementById("btn-reset").onclick = ()=>{
     g.classList.add("snap");
   });
   alpha = 1; wake();
+  fitView(true);   // 相机跟着缓动归位：整图「重排一遍」的观感
 };
 // 轴切换逻辑已在 renderToolbar() 里按动态按钮绑定；这里不再重复绑定写死的按钮。
-window.addEventListener("resize", ()=>{ resize(); wake(); });
+window.addEventListener("resize", ()=>{ resize(); fitView(false); wake(); });
 
 // ---- AI 缺角识别：模型基于收藏画像推「还想要哪类领域」----
 function loadAiGaps(){
