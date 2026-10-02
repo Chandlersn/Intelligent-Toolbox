@@ -581,6 +581,11 @@ function initGraph(){
     n.vx = 0; n.vy = 0;
     n.r = 7 + Math.min(12, Math.log10((n.stars||1)+1)*3.4);
     n.fixed = false;
+    // ★ 家(bx/by)必须在初始化时就等于当前位置。
+    //   回锚弹簧算的是 (bx - x)，bx 未定义就是 NaN —— 速度变 NaN、坐标变 NaN，
+    //   表现为 translate(NaN,NaN) / "M NaN,NaN"（从记忆还原的 pinned 节点必踩）。
+    //   测试桩 mk() 自带 bx/by，所以单测全绿也照样漏掉。
+    n.bx = n.x; n.by = n.y;
     // 慢漂相位：按索引错开，整张图不会同相位摆动
     n.ph = i * 2.399963;   // 黄金角散布
     // 钉住状态跟随记忆还原：摆过的节点重开/切轴后仍待在原地
@@ -648,6 +653,7 @@ function initGraph(){
   });
   window.__edgeEls = edgeEls;
   window.__nodeEls = nodeEls;
+  _built = true;             // 之后才允许调度器跑 tick/render（见 _built 声明处）
   // 新图就位：从头跑一轮完整布局，之后自然衰减到静止（alpha→0 后彻底停表）
   alpha = 1;
   _wasAlive = false;   // 强制下一帧重设 moving 类
@@ -666,6 +672,7 @@ function neighbors(id){
 }
 
 function tick(){
+  if(!_built) return;        // 图还没建好（数据未到 / initGraph 未跑）：绝不碰 DOM
   const N = nodes.length;
   const drag = dragNode;
   /* settling = 余波期（刚松手不到 SETTLE_MS），由 releaseAt 记录"上一次松手"的时刻。
@@ -918,6 +925,10 @@ function tick(){
     //     正确做法：松手节点余波期内自由滑、滑到哪算哪；余波结束那帧才把落点定为新家。
     //     其它被波及的已摆节点(settleUntil=0)照常走软回锚(HOME_SOFT)，撞完缓缓弹回原位。
     if(n.pinned && !n.settleUntil){
+      // 兜底：家(bx/by) 万一缺失/非数，就地定为当前位置。NaN 一旦进速度就再也洗不掉
+      // （坐标变 NaN → translate(NaN,NaN) / "M NaN,NaN" 满屏报错）。
+      if(!isFinite(n.bx)) n.bx = n.x;
+      if(!isFinite(n.by)) n.by = n.y;
       n.vx += (n.bx - n.x) * homeK;
       n.vy += (n.by - n.y) * homeK;
     }
@@ -987,7 +998,7 @@ let loopHandle = null;
    "收敛后取景"也永远不触发。所以这里补上 _wasAlive（上一帧的 alive）。 */
 function loop(){
   if(loopHandle !== null) return;     // 已有排程在途，等它自己跑
-  if(alpha > ALPHA_LIVE || dragNode || _wasAlive){
+  if(_built && (alpha > ALPHA_LIVE || dragNode || _wasAlive)){
     loopHandle = requestAnimationFrame(()=>{ loopHandle = null; tick(); });
   }
 }
@@ -1009,10 +1020,11 @@ function wake(level){
 // 注意不要无条件 wake()：那会在"用户只是切走了又切回来"时把静止的图重新弄动。
 document.addEventListener("visibilitychange", ()=>{
   if(document.hidden) cancelLoop();
-  else if(alpha > ALPHA_LIVE || dragNode || _wasAlive) loop();   // 同 loop()：判据必须一致
+  else if(_built && (alpha > ALPHA_LIVE || dragNode || _wasAlive)) loop();   // 同 loop()：判据必须一致
 });
 
 function render(){
+  if(!window.__edgeEls || !window.__nodeEls) return;   // 未建好就别写 DOM（见 _built）
   window.__edgeEls.forEach(({el,e})=>{
     const a=byId[e.source], b=byId[e.target];
     if(!a||!b) return;
@@ -1062,6 +1074,12 @@ let dragNode = null, dragMoved = false, hoverNode = null;
 //   对照 lantern：它的图谱靠同一套 layout(tx/ty/k) 做缩放、平移、打开检查器时整图缓动重排 ——
 //   这是「图谱像活地图」的核心，我之前缺的就是这层。
 let cam = { tx:0, ty:0, k:1 }, camG = null, panning = false, panStart = null;
+/* 图是否已建好（边/节点的 DOM 元素已生成并挂到 window.__edgeEls/__nodeEls）。
+   ★ 必须有一道闸：ResizeObserver 在 observe() 的瞬间就会回调一次，那时 load() 的
+   fetch 还没回来、initGraph 还没跑 —— 它调 wake() → loop() → tick() → render()
+   就会撞上 undefined 的 __edgeEls（"Cannot read properties of undefined"）。
+   没有这道闸，任何在数据到达前唤醒循环的路径都会让整页崩掉。 */
+let _built = false;
 /* 待适配标记：initGraph / 切轴 / 重置 后不要立刻 fit —— 那时节点还挤在初始散布点，
    拿它去 fit 会得到"放大看一坨"的错误取景。正确做法是等力导向收敛、图真正静止的
    那一帧再缓动取景（lantern 的 graphSettle→refit 也是这个顺序）。 */
@@ -1083,7 +1101,9 @@ function fitView(animated){
     if(n.x-r<minX)minX=n.x-r; if(n.y-r<minY)minY=n.y-r;
     if(n.x+r>maxX)maxX=n.x+r; if(n.y+r>maxY)maxY=n.y+r; });
   const r = svg.getBoundingClientRect();
-  const Wv = r.width, Hv = r.height, pad = 46;
+  const Wv = (r.width >= 40 ? r.width : W) || FALLBACK_W;
+  const Hv = (r.height >= 40 ? r.height : H) || FALLBACK_H;
+  const pad = 46;
   const bw = Math.max(1, maxX-minX), bh = Math.max(1, maxY-minY);
   let k = Math.min((Wv-pad*2)/bw, (Hv-pad*2)/bh);
   k = Math.max(0.35, Math.min(3.2, k));
@@ -1343,6 +1363,7 @@ if(window.ResizeObserver){
   let _obsW = 0, _obsH = 0;
   new ResizeObserver(()=>{
     if(!resize()) return;                       // 还是 0×0（仍隐藏），等下次
+    if(!_built) return;                         // 图还没建好，唤醒会撞上未初始化的 DOM
     if(Math.abs(W - _obsW) < 2 && Math.abs(H - _obsH) < 2) return;
     _obsW = W; _obsH = H;
     _fitPending = true; wake(0.5);

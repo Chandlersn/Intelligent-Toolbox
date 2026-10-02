@@ -27,9 +27,14 @@ const mkEl = (tag) => {
     set textContent(v){ el._text=v; }, get textContent(){ return el._text; },
     set innerHTML(v){ el._html=v; }, get innerHTML(){ return el._html; },
     getBoundingClientRect(){ return {left:0,top:0,width:1200,height:760}; },
+    querySelector(){ return null; },
     querySelectorAll(){ return []; },
     get firstChild(){ return el.children[0]; }
   };
+  // 桩里 style 也得能 setProperty：initGraph 建节点时会写 --r / --d / --bd 这些自定义属性
+  el.style.setProperty = function(k,v){ el.style[k]=v; };
+  el.style.getPropertyValue = function(k){ return el.style[k]||''; };
+  el.style.removeProperty = function(k){ delete el.style[k]; };
   return el;
 };
 const doc = {
@@ -77,6 +82,7 @@ const wrapped = src + `
   get releaseAt(){return releaseAt;}, set releaseAt(v){releaseAt=v;},
   get W(){return W;}, set W(v){W=v;},
   get H(){return H;}, set H(v){H=v;},
+  get _built(){return _built;}, set _built(v){_built=v;},
   NODEELS: ()=>window.__nodeEls, C: (n)=>({LINK_REST,CONTACT_PAD,REPEL_FADE,DRAG_SHOVE,SETTLE_MS,RELEASE_DAMP,DAMP,HOME_K,HOME_SOFT})
 };`;
 try {
@@ -144,6 +150,9 @@ function harness(nodes, edges){
   window.__edgeEls.forEach(({e,el})=>{ el.setAttribute('class','edge grow'); });
   api.alpha = 0; api.dragMoved = false;
   api.W = 1200; api.H = 760;   // initGraph 没跑，手动给画布尺寸（否则 clamp 会把所有节点钉在 x=14）
+  // 这里手动建好了边/节点的 DOM 元素，语义上等价于 initGraph 完成 → 必须放行调度闸门，
+  // 否则 tick() 开头的 `if(!_built) return` 会让整场测试静默空转（踩过：5 个场景全 FAIL 却看不出原因）。
+  api._built = true;
 }
 // 模拟真实匀速拖拽（不跑物理）：每帧移动固定 (dx,dy)，dvx/dvy 恒为 (dx,dy)，和松手速度挂钩。
 function drag(node, dx, dy, frames){
@@ -256,7 +265,33 @@ harness([ mk("A",300,380,14), mk("B",560,300,12) ], [{source:"A",target:"B"}]);
               (pass ? "OK 调度器会自己停" : "FAIL 死循环/半路冻住（loop 与 alive 判据不一致）"));
 }
 
+// ===== 场景 6：从记忆还原的 pinned 节点必须带"家"(bx/by) =====
+// 真实事故：initGraph 还原 localStorage 里的坐标时只给了 x/y，没给 bx/by，
+// 而回锚弹簧算的是 (bx - x) —— undefined 一进场就是 NaN：速度 NaN → 坐标 NaN →
+// 整页刷 translate(NaN,NaN) / "M NaN,NaN"（实测 721 条报错，9 个节点全废）。
+// 之前这个测试桩的 mk() 自带 bx/by，等于替产品代码把坑填了，所以 5 个场景全绿照样漏。
+// 这里刻意喂一组**没有 bx/by** 的节点跑真实 initGraph，直接堵住这个洞。
+{
+  rafQ.length = 0;
+  api.nodes = [ mk("A",300,380,14,true), mk("B",430,380,12,true) ];
+  api.nodes.forEach(n=>{ delete n.bx; delete n.by; });   // 模拟"刚从记忆还原、还没设家"
+  api.edges = [];
+  api.initGraph();
+  const A = api.nodes[0];
+  const hasHome = api.nodes.every(n => isFinite(n.bx) && isFinite(n.by));
+  drive(400);                                            // 跑物理，看会不会被 NaN 污染
+  const clean = api.nodes.every(n => isFinite(n.x) && isFinite(n.y) &&
+                                     isFinite(n.vx) && isFinite(n.vy));
+  const pass = hasHome && clean;
+  allOk = allOk && pass;
+  console.log("[场景6 记忆还原] initGraph 后 bx/by 均已初始化="+hasHome+
+              " 跑完物理坐标/速度无 NaN="+clean+
+              "（A: x="+A.x.toFixed(1)+" bx="+A.bx.toFixed(1)+"）  →  "+
+              (pass?"OK":"FAIL 家缺失→NaN 污染整张图"));
+  rafQ.length = 0;
+}
+
 console.log("");
-console.log(allOk ? "浏览器环境验证通过（惯性滑行 + 撞已摆节点 + 链式牵引 + 静止性 + 调度器自行停表）"
+console.log(allOk ? "浏览器环境验证通过（惯性滑行 + 撞已摆节点 + 链式牵引 + 静止性 + 调度器自行停表 + 记忆还原不产生 NaN）"
                   : "浏览器环境验证未通过");
 process.exit(allOk?0:1);
