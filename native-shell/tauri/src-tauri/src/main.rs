@@ -1,4 +1,6 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// 无控制台窗口：这是常驻桌面悬浮球，debug/release 都不该弹黑框。
+// （调试需要 stdout 时可临时改回 cfg_attr(not(debug_assertions), ...)。）
+#![windows_subsystem = "windows"]
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
