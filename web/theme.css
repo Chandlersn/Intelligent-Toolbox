@@ -179,11 +179,13 @@ h1{font-size:20px;letter-spacing:.2px}
 /* ---------- 仓库更新反馈条（顶部，可关闭） ---------- */
 .upd-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   background:var(--accent-dim);border-bottom:1px solid var(--accent-line);
-  color:var(--ink);font-size:13px;padding:10px 14px;line-height:1.4}
+  color:var(--ink);font-size:12px;padding:6px 14px;line-height:1.4}
 .upd-banner .upd-t{font-weight:600;white-space:nowrap}
-.upd-banner .upd-list{flex:1;min-width:150px;color:var(--muted)}
-.upd-banner a.upd-go{color:var(--accent);cursor:pointer;text-decoration:underline;white-space:nowrap}
-.upd-banner a.upd-go:hover{color:var(--accent-2)}
+.upd-banner .upd-list{flex:1;min-width:150px;color:var(--muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upd-banner a.upd-go{color:var(--accent);cursor:pointer;text-decoration:none;
+  padding:2px 8px;border:1px solid var(--accent-line);border-radius:999px;font-size:12px}
+.upd-banner a.upd-go:hover{color:var(--accent-2);border-color:var(--accent-2)}
 
 /* ---------- 卡片「有更新」角标 ---------- */
 .pill.upd{color:var(--warn);background:rgba(224,168,75,.14);border-color:rgba(224,168,75,.40)}

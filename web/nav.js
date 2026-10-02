@@ -150,6 +150,10 @@
  * 其余时候靠用户点「检查更新」主动触发。事件可点「知道了」消除。
  * ─────────────────────────────────────────────────────────────── */
 (function () {
+  // 容器页（探索页内嵌 topics/map 的 iframe）自己不拉横幅 —— 内嵌页会渲染同一条，
+  // 容器再挂一条就重复了。只在普通页面加载更新提示。
+  var isHostPage = !!document.querySelector(".vframe");
+
   function el(id) { return document.getElementById(id); }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -230,6 +234,7 @@
     }).catch(function () {});
   }
 
+  if (isHostPage) return; // 容器页：不取更新、不挂横幅，交给内嵌页
   loadUpdates();
   maybeAutoCheck();
 })();
