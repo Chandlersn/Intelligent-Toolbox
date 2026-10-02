@@ -1,24 +1,23 @@
 (function () {
   // 悬浮球组件（桌面壳专用）：只保留「收」球，不弹任何面板。
   // 拖球 = 拖动整个透明窗口（Tauri startDragging），因此能在整屏任意放置，
-  // 窗口之外不挡点击。点球 = 静默从剪贴板读取仓库地址并收藏（不弹输入框）。
+  // 窗口之外不挡点击。点球 = 用系统默认浏览器打开收藏主页面。
   // 页面与脚本由收集器后端 8732 直供，唯一真源不漂移。
+  // 注意：壳窗口 url 是 http://127.0.0.1:8732（对 Tauri 属"远程页面"），
+  // 必须在 capabilities 里给该域开 remote 访问，window.__TAURI__ 才会被注入。
   var COLLECTOR = window.REPO_COLLECTOR || (location.origin + "/collect");
   var KEY_POS = "repo_ball_pos";
 
   var C = {
     accent: "var(--accent,#B5673E)",
     accentInk: "var(--accent-ink,#FFFFFF)",
-    line: "var(--line,#E6E2DA)",
-    surface: "var(--surface,#FFFFFF)",
-    surface2: "var(--surface-2,#F2F0EB)",
-    ink: "var(--ink,#23201B)",
     onInk: "var(--on-ink,#FBFAF7)"
   };
 
-  // Tauri v2 全局 API（withGlobalTauri 已开）。不在 Tauri 里则 curWin() 为 null，
-  // 此时退化为普通页面上的可拖拽球（不影响其他用途）。
+  // Tauri v2 全局 API（远程域已授权 IPC 后可用）。不在 Tauri 里则 curWin() 为 null，
+  // 此时退化为普通页面上的静态球（不影响其他用途）。
   var wmod = (window.__TAURI__ && window.__TAURI__.window) ? window.__TAURI__.window : null;
+  var core = (window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
   function curWin() { return wmod ? wmod.getCurrentWindow() : null; }
   function Phys(x, y) {
     try { return new wmod.PhysicalPosition(x, y); } catch (e) { return null; }
@@ -53,13 +52,22 @@
       t.style.cssText = "position:fixed;left:50%;top:16px;transform:translateX(-50%);" +
         "background:rgba(35,32,27,.95);color:" + C.onInk + ";font:14px/1.4 -apple-system,'Segoe UI',sans-serif;" +
         "padding:10px 16px;border-radius:10px;z-index:2147483646;opacity:0;transition:opacity .25s;" +
-        "pointer-events:none;max-width:86%";
+        "pointer-events:none;max-width:86%;white-space:nowrap";
       document.body.appendChild(t);
     }
     t.textContent = msg;
     t.style.opacity = "1";
     clearTimeout(t._t);
     t._t = setTimeout(function () { t.style.opacity = "0"; }, 1600);
+  }
+
+  // 点球：打开收藏主页面（走 Rust 命令调系统默认浏览器；无 Tauri 环境退回 window.open）
+  function openMainPage() {
+    if (core && core.invoke) {
+      core.invoke("open_main_page");
+    } else {
+      window.open(location.origin + "/", "_blank");
+    }
   }
 
   function makeBall() {
@@ -79,8 +87,8 @@
     try {
       var pos = JSON.parse(localStorage.getItem(KEY_POS) || "null");
       var w = curWin();
-      if (pos && w) { w.setPosition(Phys(pos.x, pos.y)); }
-      else if (!pos && w && window.screen) {
+      if (pos && w && Phys(pos.x, pos.y)) { w.setPosition(Phys(pos.x, pos.y)); }
+      else if (!pos && w && window.screen && Phys(0, 0)) {
         // 首次：放到右下角
         w.setPosition(Phys(window.screen.availWidth - 130, window.screen.availHeight - 130));
       }
@@ -91,7 +99,7 @@
     ball.addEventListener("mousedown", function (e) {
       e.preventDefault();
       var w = curWin();
-      if (!w) return;
+      if (!w || !w.startDragging) return;
       try {
         w.outerPosition().then(function (p) { downPos = { x: p.x, y: p.y }; });
         w.startDragging(); // 拖动整个窗口 = 球随窗口走，可任意摆放
@@ -103,14 +111,14 @@
       if (!dragging) return;
       dragging = false;
       var w = curWin();
-      if (!w) return;
+      if (!w || !w.outerPosition) { openMainPage(); return; }
       try {
         w.outerPosition().then(function (p) {
           var moved = !downPos || Math.abs(p.x - downPos.x) > 3 || Math.abs(p.y - downPos.y) > 3;
           localStorage.setItem(KEY_POS, JSON.stringify({ x: p.x, y: p.y }));
-          if (!moved) onTap(); // 没移动 = 点按
+          if (!moved) openMainPage(); // 没移动 = 点按 → 打开收藏页面
         });
-      } catch (err) {}
+      } catch (err) { openMainPage(); }
     });
 
     // 拖入链接直接收藏
@@ -126,32 +134,6 @@
         });
       } else { toast("拖入的链接不是仓库地址"); }
     });
-
-    // 点按：静默尝试从剪贴板收藏，不弹面板。
-    // 优先走 Tauri 剪贴板插件（Rust 侧读取，不受 WebView2 权限拦截），
-    // 不在 Tauri 环境再退回 navigator.clipboard。
-    function readClipboard(done) {
-      var cm = (window.__TAURI__ && window.__TAURI__.clipboardManager) ? window.__TAURI__.clipboardManager : null;
-      if (cm && cm.readText) {
-        cm.readText().then(function (t) { done(t || ""); })
-          .catch(function () { done(null); });
-      } else if (navigator.clipboard && navigator.clipboard.readText) {
-        navigator.clipboard.readText().then(function (t) { done(t || ""); })
-          .catch(function () { done(null); });
-      } else { done(null); }
-    }
-
-    function onTap() {
-      readClipboard(function (txt) {
-        if (txt === null) { toast("无法读取剪贴板"); return; }
-        var m = txt.match(/https?:\/\/[^\s]+/);
-        if (m && isRepo(m[0])) {
-          collect(m[0], "", function (ok, err, dup) {
-            toast(ok ? (dup ? "已收藏过" : "已收藏 ✓") : ("失败: " + (err || "")));
-          });
-        } else { toast("剪贴板里没有仓库地址"); }
-      });
-    }
   }
 
   if (document.readyState !== "loading") makeBall();

@@ -104,6 +104,19 @@ fn slog(msg: &str) {
     }
 }
 
+/// 点球打开收藏主页面：用系统默认浏览器开 8732 首页（不藏在壳窗口里）。
+#[tauri::command]
+fn open_main_page() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", "", &format!("{COLLECTOR_BASE}/")])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW，不留黑框
+            .spawn();
+    }
+}
+
 fn main() {
     // 固定 WebView2 用户数据目录（在 Tauri 初始化前设置）：
     // 1) 不依赖启动方式（双击 / 发送到 / 深链），档案位置恒定；
@@ -130,6 +143,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .invoke_handler(tauri::generate_handler![open_main_page])
         .setup(|app| {
             // 注册本 App 能处理的协议 scheme
             #[cfg(desktop)]
