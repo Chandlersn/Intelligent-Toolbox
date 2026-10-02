@@ -61,16 +61,63 @@
     t._t = setTimeout(function () { t.style.opacity = "0"; }, 1600);
   }
 
-  // 点球：打开收藏主页面（走 Rust 命令调系统默认浏览器；无 Tauri 环境退回 window.open）
+  // 点球：打开收藏主页面。自定义命令对远程页被 ACL 拦，走事件通道（Rust 监听 ball-tap）。
   function openMainPage() {
-    if (core && core.invoke) {
-      core.invoke("open_main_page");
+    var em = (window.__TAURI__ && window.__TAURI__.event) ? window.__TAURI__.event : null;
+    if (em && em.emit) {
+      em.emit("ball-tap");
+      probe({ probe: "tap-emit" });
     } else {
       window.open(location.origin + "/", "_blank");
     }
   }
 
+  // 探针统一入口：回报到后端日志（诊断用）
+  function probe(info) {
+    try {
+      fetch("/api/ball_probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(info)
+      });
+    } catch (e) {}
+  }
+
   function makeBall() {
+    // 环境探针：回报 Tauri API 注入状态（诊断远程页 IPC 授权是否生效）
+    try {
+      fetch("/api/ball_probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hasTauri: !!window.__TAURI__,
+          tauriKeys: window.__TAURI__ ? Object.keys(window.__TAURI__) : [],
+          hasWindowMod: !!(window.__TAURI__ && window.__TAURI__.window),
+          href: location.href,
+          ua: navigator.userAgent.slice(0, 100)
+        })
+      });
+    } catch (e) {}
+    // IPC 实调探针：0.6s 后真调一次 outerPosition，回报成败与错误串
+    setTimeout(function () {
+      var w = curWin();
+      if (!w || !w.outerPosition) {
+        probe({ probe: "ipc", ok: false, err: "no-api" });
+        return;
+      }
+      w.outerPosition().then(
+        function (p) { probe({ probe: "ipc", ok: true, x: p.x, y: p.y }); },
+        function (e) { probe({ probe: "ipc", ok: false, err: String(e).slice(0, 200) }); }
+      );
+      // 事件通道实调探针：emit 是否放行
+      if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
+        window.__TAURI__.event.emit("ball-probe-ping");
+        probe({ probe: "emit", ok: true });
+      } else {
+        probe({ probe: "emit", ok: false, err: "no-event-mod" });
+      }
+    }, 600);
+
     var ball = document.createElement("div");
     ball.id = "repo_ball";
     var size = 60;
@@ -94,31 +141,80 @@
       }
     } catch (e) {}
 
-    var downPos = null, dragging = false;
+    // 鼠标事件探针：mousedown/mouseup/click 各回报一条（诊断事件是否到达 WebView2）
+    ["mousedown", "mouseup", "click"].forEach(function (ev) {
+      ball.addEventListener(ev, function (e) {
+        try {
+          fetch("/api/ball_probe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ probe: "mouse", ev: ev, x: e.clientX, y: e.clientY })
+          });
+        } catch (err) {}
+      });
+    });
+
+    // 位置定时探针（临时诊断）：每 2s 回报窗口坐标，共 15 次
+    var _n = 0;
+    var _posTimer = setInterval(function () {
+      var w = curWin();
+      if (!w || !w.outerPosition || _n++ > 15) { clearInterval(_posTimer); return; }
+      w.outerPosition().then(function (p) {
+        try {
+          fetch("/api/ball_probe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ probe: "pos", x: p.x, y: p.y })
+          });
+        } catch (e) {}
+      });
+    }, 2000);
+
+    var downPos = null, dragging = false, startDragging_ = false;
 
     ball.addEventListener("mousedown", function (e) {
-      e.preventDefault();
+      // 不在这里直接 startDragging：系统移动循环会吞掉后续 mouseup，
+      // 点按就死了。改为移动超阈值才进入拖拽，点按留给 mouseup。
       var w = curWin();
       if (!w || !w.startDragging) return;
-      try {
-        w.outerPosition().then(function (p) { downPos = { x: p.x, y: p.y }; });
-        w.startDragging(); // 拖动整个窗口 = 球随窗口走，可任意摆放
-      } catch (err) {}
+      downPos = { x: e.clientX, y: e.clientY };
+      startDragging_ = false;
       dragging = true;
+      try { ball.setPointerCapture(e.pointerId); } catch (err) {}
+    });
+
+    ball.addEventListener("pointermove", function (e) {
+      if (!dragging || startDragging_) return;
+      var dx = e.clientX - downPos.x, dy = e.clientY - downPos.y;
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      startDragging_ = true;
+      try {
+        probe({ probe: "drag-start" });
+        curWin().startDragging(); // 进入系统移动循环，窗口（球）跟随鼠标
+      } catch (err) {}
     });
 
     ball.addEventListener("mouseup", function () {
       if (!dragging) return;
       dragging = false;
-      var w = curWin();
-      if (!w || !w.outerPosition) { openMainPage(); return; }
-      try {
-        w.outerPosition().then(function (p) {
-          var moved = !downPos || Math.abs(p.x - downPos.x) > 3 || Math.abs(p.y - downPos.y) > 3;
-          localStorage.setItem(KEY_POS, JSON.stringify({ x: p.x, y: p.y }));
-          if (!moved) openMainPage(); // 没移动 = 点按 → 打开收藏页面
-        });
-      } catch (err) { openMainPage(); }
+      if (startDragging_) {
+        startDragging_ = false;
+        var w = curWin();
+        if (w) {
+          try {
+            w.outerPosition().then(function (p) {
+              localStorage.setItem(KEY_POS, JSON.stringify({ x: p.x, y: p.y }));
+              probe({ probe: "drag-end", x: p.x, y: p.y });
+            });
+          } catch (err) {}
+        }
+        // 拖拽后的 mouseup 往往被系统循环吞掉，走不到这里；位置由定时探针兜底
+      }
+      // 点按不在这里开页面：click 事件总会跟着 mouseup 一起来，由 click 统一处理，避免双开
+    });
+    ball.addEventListener("click", function () {
+      // 点按入口：click 只在"未拖动"时触发（系统拖拽循环会吞掉 click）
+      if (!dragging && !startDragging_) { probe({ probe: "tap-click" }); openMainPage(); }
     });
 
     // 拖入链接直接收藏

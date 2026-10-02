@@ -1783,6 +1783,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", with_charset(ctype))
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -2006,6 +2007,23 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- POST ----------
     def do_POST(self):
         p = self.path.rstrip("/")
+        if p == "/api/ball_probe":
+            # 悬浮球环境探针：只追加日志不落库（诊断 Tauri 对后端直供页的 API 注入）。
+            payload, err = self._read_json()
+            if err != 200:
+                self._send(err, {"ok": False})
+                return
+            probe = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 ".workbuddy", "ball_probe.log")
+            try:
+                os.makedirs(os.path.dirname(probe), exist_ok=True)
+                with open(probe, "a", encoding="utf-8") as f:
+                    f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " "
+                            + json.dumps(payload, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
+            self._send(200, {"ok": True})
+            return
         if p == "/api/card/regenerate":
             guard = self._write_guard(same_origin_required=True)
             if guard:

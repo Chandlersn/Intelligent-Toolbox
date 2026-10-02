@@ -104,9 +104,8 @@ fn slog(msg: &str) {
     }
 }
 
-/// 点球打开收藏主页面：用系统默认浏览器开 8732 首页（不藏在壳窗口里）。
-#[tauri::command]
-fn open_main_page() {
+/// 用系统默认浏览器打开收藏主页面（不藏在壳窗口里）。
+fn open_main_page_in_browser() {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -115,6 +114,13 @@ fn open_main_page() {
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW，不留黑框
             .spawn();
     }
+}
+
+/// 点球打开收藏主页面：自定义命令对远程页走 ACL 会拦（"not allowed. Plugin not found"），
+/// 改走事件通道 —— JS emit("ball-tap")，core:default 已含 allow-emit。
+#[tauri::command]
+fn open_main_page() {
+    open_main_page_in_browser();
 }
 
 fn main() {
@@ -165,6 +171,12 @@ fn main() {
                 }
             });
             slog("setup done");
+
+            // 悬浮球点按 → 打开收藏页（事件通道，见 open_main_page 注释）
+            use tauri::Listener;
+            app.listen("ball-tap", move |_| {
+                open_main_page_in_browser();
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
