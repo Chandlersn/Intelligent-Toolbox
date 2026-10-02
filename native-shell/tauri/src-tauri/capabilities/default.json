@@ -16,6 +16,7 @@
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "core:window:allow-destroy",
+    "core:window:allow-set-focus",
     "deep-link:default",
     "deep-link:allow-is-registered",
     "deep-link:allow-register",

@@ -306,6 +306,9 @@
       if (!w) { openMainPage(); return; } // 非 Tauri 环境退化
       try {
         if (Logical(MENU_W, MENU_H)) w.setSize(Logical(MENU_W, MENU_H));
+        // 确保球窗口持有焦点，否则"点屏幕别处"不会触发 blur（收不起来）
+        var f = w.setFocus();
+        if (f && f.catch) f.catch(function () {});
       } catch (err) { probe({ probe: "menu-size-err", err: String(err).slice(0, 120) }); }
       probe({ probe: "menu-open" });
       menu = document.createElement("div");
@@ -351,6 +354,16 @@
       var w = curWin();
       if (w) { try { w.setSize(Logical(WIN_W, WIN_H)); } catch (err) {} }
     }
+    // 点球窗口以外的任何地方 = 球窗口失焦 → 自动收起菜单（弹层的标准关法）
+    if (emod && emod.listen) {
+      emod.listen("tauri://blur", function () {
+        if (menu) { probe({ probe: "menu-blur-close" }); hideMenu(); }
+      });
+    }
+    // Esc 也能收起
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && menu) hideMenu();
+    });
     function openMainPageAndClose() { hideMenu(); openMainPage(); }
     function collectAndClose() { hideMenu(); collectClipboard(); }
     function quitAndClose() {
