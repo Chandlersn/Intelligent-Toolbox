@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 // 收集器后端地址（与 Android 的 COLLECTOR_BASE 对应）。
 // 开发期本机；发布期应指向可访问地址。
@@ -123,6 +124,68 @@ fn open_main_page() {
     open_main_page_in_browser();
 }
 
+/// 全局快捷键（Alt+Q）：任意界面读剪贴板里的链接 → 甩给收集器，
+/// 结果经 collect-result 事件回给悬浮球弹 toast（球是唯一 UI 出口）。
+fn collect_clipboard_via_hotkey(app: &tauri::AppHandle) {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    fn emit_result(app: &tauri::AppHandle, ok: bool, dup: bool, error: &str) {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.emit(
+                "collect-result",
+                serde_json::json!({ "ok": ok, "dup": dup, "error": error }),
+            );
+        }
+    }
+
+    let text = match app.clipboard().read_text() {
+        Ok(t) => t,
+        Err(e) => {
+            emit_result(app, false, false, &format!("无法读取剪贴板: {e}"));
+            return;
+        }
+    };
+    let url = text
+        .split_whitespace()
+        .find(|s| s.starts_with("http://") || s.starts_with("https://"))
+        .unwrap_or("")
+        .to_string();
+    if url.is_empty() {
+        emit_result(app, false, false, "剪贴板里没有链接");
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        #[derive(Serialize)]
+        struct P<'a> {
+            url: &'a str,
+            text: &'a str,
+        }
+        let resp = client()
+            .post(format!("{COLLECTOR_BASE}/collect"))
+            .json(&P { url: &url, text: "" })
+            .send();
+        let (ok, dup, err) = match resp {
+            Ok(r) => r
+                .json::<serde_json::Value>()
+                .ok()
+                .map(|v| {
+                    (
+                        v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
+                        v.get("dup").and_then(|x| x.as_bool()).unwrap_or(false),
+                        v.get("error")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    )
+                })
+                .unwrap_or((false, false, "响应异常".into())),
+            Err(e) => (false, false, format!("后端未响应: {e}")),
+        };
+        emit_result(&handle, ok, dup, &err);
+    });
+}
+
 fn main() {
     // 固定 WebView2 用户数据目录（在 Tauri 初始化前设置）：
     // 1) 不依赖启动方式（双击 / 发送到 / 深链），档案位置恒定；
@@ -149,6 +212,16 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    // 只在按下沿触发一次（抬起沿忽略）
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        collect_clipboard_via_hotkey(app);
+                    }
+                })
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![open_main_page])
         .setup(|app| {
             // 注册本 App 能处理的协议 scheme
@@ -172,10 +245,30 @@ fn main() {
             });
             slog("setup done");
 
+            // 全局快捷键 Alt+Q：任意界面一键收剪贴板
+            match app.global_shortcut().register("Alt+Q") {
+                Ok(_) => slog("hotkey alt+q registered"),
+                Err(e) => slog(&format!("hotkey register failed: {e}")),
+            }
+
             // 悬浮球点按 → 打开收藏页（事件通道，见 open_main_page 注释）
             use tauri::Listener;
             app.listen("ball-tap", move |_| {
                 open_main_page_in_browser();
+            });
+
+            // 悬浮球菜单「退出」：干净结束进程
+            let quit_handle = app.handle().clone();
+            app.listen("ball-quit", move |_| {
+                slog("quit requested by ball menu");
+                quit_handle.exit(0);
+            });
+
+            // 悬浮球「单击收藏」：clipboardManager 插件的 JS API 不在全局包里，
+            // 统一走事件通道让 Rust 读剪贴板（与快捷键同一条已验证路径）
+            let clip_handle = app.handle().clone();
+            app.listen("ball-collect-clipboard", move |_| {
+                collect_clipboard_via_hotkey(&clip_handle);
             });
             Ok(())
         })
