@@ -13,6 +13,7 @@
   },
   "permissions": [
     "core:default",
+    "core:window:allow-set-position",
     "deep-link:default",
     "deep-link:allow-is-registered",
     "deep-link:allow-register",

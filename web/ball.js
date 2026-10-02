@@ -172,6 +172,12 @@
 
     var downPos = null, dragging = false, moved_ = false;
     var startScreen = null, winOrigin = null;
+    var setposErrLogged = false;
+    function logSetposErr(e) {
+      if (setposErrLogged) return;
+      setposErrLogged = true;
+      probe({ probe: "setpos-err", err: String(e).slice(0, 160) });
+    }
 
     ball.addEventListener("mousedown", function (e) {
       // 不用系统 startDragging（透明 WebView2 窗口上实测无效），
@@ -202,8 +208,10 @@
       if (!winOrigin) return; // 等起点坐标回来
       var dpr = window.devicePixelRatio || 1; // screenX 是 CSS 像素，位置是物理像素
       try {
-        w.setPosition(Phys(Math.round(winOrigin.x + dx * dpr), Math.round(winOrigin.y + dy * dpr)));
-      } catch (err) {}
+        var np = Phys(Math.round(winOrigin.x + dx * dpr), Math.round(winOrigin.y + dy * dpr));
+        var pr = w.setPosition(np);
+        if (pr && pr.catch) pr.catch(logSetposErr); // ACL 拒绝时不再静默
+      } catch (err) { logSetposErr(err); }
     });
 
     ball.addEventListener("pointerup", function () {
@@ -216,8 +224,8 @@
             w.outerPosition().then(function (p) {
               localStorage.setItem(KEY_POS, JSON.stringify({ x: p.x, y: p.y }));
               probe({ probe: "drag-end", x: p.x, y: p.y });
-            });
-          } catch (err) {}
+            }, logSetposErr);
+          } catch (err) { logSetposErr(err); }
         }
       }
     });
