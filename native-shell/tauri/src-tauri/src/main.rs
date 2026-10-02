@@ -107,6 +107,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             // 注册本 App 能处理的协议 scheme
             #[cfg(desktop)]

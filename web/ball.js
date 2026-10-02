@@ -127,18 +127,30 @@
       } else { toast("拖入的链接不是仓库地址"); }
     });
 
-    // 点按：静默尝试从剪贴板收藏，不弹面板
+    // 点按：静默尝试从剪贴板收藏，不弹面板。
+    // 优先走 Tauri 剪贴板插件（Rust 侧读取，不受 WebView2 权限拦截），
+    // 不在 Tauri 环境再退回 navigator.clipboard。
+    function readClipboard(done) {
+      var cm = (window.__TAURI__ && window.__TAURI__.clipboardManager) ? window.__TAURI__.clipboardManager : null;
+      if (cm && cm.readText) {
+        cm.readText().then(function (t) { done(t || ""); })
+          .catch(function () { done(null); });
+      } else if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(function (t) { done(t || ""); })
+          .catch(function () { done(null); });
+      } else { done(null); }
+    }
+
     function onTap() {
-      if (navigator.clipboard && navigator.clipboard.readText) {
-        navigator.clipboard.readText().then(function (txt) {
-          var m = (txt || "").match(/https?:\/\/[^\s]+/);
-          if (m && isRepo(m[0])) {
-            collect(m[0], "", function (ok, err, dup) {
-              toast(ok ? (dup ? "已收藏过" : "已收藏 ✓") : ("失败: " + (err || "")));
-            });
-          } else { toast("剪贴板里没有仓库地址"); }
-        }).catch(function () { toast("无法读取剪贴板"); });
-      } else { toast("无法读取剪贴板"); }
+      readClipboard(function (txt) {
+        if (txt === null) { toast("无法读取剪贴板"); return; }
+        var m = txt.match(/https?:\/\/[^\s]+/);
+        if (m && isRepo(m[0])) {
+          collect(m[0], "", function (ok, err, dup) {
+            toast(ok ? (dup ? "已收藏过" : "已收藏 ✓") : ("失败: " + (err || "")));
+          });
+        } else { toast("剪贴板里没有仓库地址"); }
+      });
     }
   }
 
