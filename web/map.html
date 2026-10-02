@@ -617,36 +617,45 @@ function tick(){
   // 调度交给外层的 loop() 决定（满帧 / 20fps 降频），tick 只管力学。
   loop();
 }
-let idleTimer = null, loopScheduled = false;
+/* 调度器只有一个真相来源：loopHandle（当前排程句柄）+ loopMode（它是 rAF 还是 timeout）。
+   之前的写法是「loopScheduled 标志位」+「idleTimer」两个各自独立的状态，
+   于是一旦在定时器还没到点时把它 clearTimeout 掉，标志位仍然是 true，
+   之后所有 loop() 都直接 return —— 循环永久死锁，图彻底静止，拖拽自然也没反应。
+   现在「有没有排程」直接由句柄是否存在决定，不可能对不上。 */
+let loopHandle = null, loopMode = null;
 function idleAllowed(){ return nodes.length <= 160; }
 // 统一调度口：交互中（能量高 / 拖拽中）走满帧，稳定后降到 ~20fps。
 // forceCollide + 斥力是 O(N²)，满帧每帧都算太烧 CPU；但降频只是少渲染，
 // 力学一步没少，所以图照样是"活着"的。
-// 注意：低频档必须自己排下一次定时器再设 loopScheduled，否则标志永远为 true、图直接静止。
+// 注意：回调里必须先把句柄置空再 tick()，因为 tick() 结尾还会再调 loop() 续排。
 function loop(){
-  if(loopScheduled) return;           // 防重复排程
-  loopScheduled = true;
+  if(loopHandle !== null) return;     // 已有排程在途，等它自己跑
   if(alpha > 0.05 || dragNode){
-    requestAnimationFrame(()=>{ loopScheduled = false; tick(); });
+    loopMode = "raf";
+    loopHandle = requestAnimationFrame(()=>{ loopHandle = null; loopMode = null; tick(); });
   } else if(idleAllowed()){
-    idleTimer = setTimeout(()=>{ loopScheduled = false; tick(); }, 50);
-  } else {
-    loopScheduled = false;            // 节点太多且无交互：彻底停表，别空烧
+    loopMode = "timeout";
+    loopHandle = setTimeout(()=>{ loopHandle = null; loopMode = null; tick(); }, 50);
   }
+  // 否则（节点太多且无交互）：彻底停表，不设句柄，别空烧
+}
+// 撤销待执行的排程。取消和"是否有排程"必须由同一个状态驱动，
+// 否则就会出现「定时器被清掉了但标志还挂着」的死锁。
+function cancelLoop(){
+  if(loopHandle === null) return;
+  if(loopMode === "raf") cancelAnimationFrame(loopHandle);
+  else clearTimeout(loopHandle);
+  loopHandle = null; loopMode = null;
 }
 function wake(){
-  if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
+  cancelLoop();
   alpha = Math.max(alpha, 0.28);      // 交互时把能量拉起来，松手后衰减回环境档
   loop();
 }
 // 页面藏起来（切标签/最小化）就别空转，回来时再唤醒
 document.addEventListener("visibilitychange", ()=>{
-  if(document.hidden){
-    if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
-    loopScheduled = false;
-  } else {
-    wake();
-  }
+  if(document.hidden) cancelLoop();
+  else wake();
 });
 
 function render(){
@@ -673,7 +682,11 @@ function render(){
 }
 
 /* ---------- 交互 ---------- */
-/* 拖拽全局只绑一次：initGraph 会随切轴/刷新反复执行，逐节点挂 window 监听会成倍堆积。 */
+/* 用 Pointer Events 而不是 mouse/touch 分开绑：
+   ① 一套代码同时覆盖鼠标、触屏、手写笔；
+   ② setPointerCapture 让「按住之后移出 svg 范围」也能继续拖 ——
+   分开绑 mousemove 的话，鼠标一拖出图框就断了，松手也检测不到，
+   节点会卡在 fixed 状态变成"拖不动的死点"。 */
 let dragNode = null, dragMoved = false, hoverNode = null;
 
 function startDrag(n){
@@ -685,9 +698,15 @@ function startDrag(n){
 function dragMove(cx, cy){
   if(!dragNode) return;
   const r = svg.getBoundingClientRect();
-  const x = cx - r.left, y = cy - r.top;
+  // 夹在画布内：原来的边界夹取写在 tick 的积分步里，而积分步跳过 fixed 节点，
+  // 于是拖出去的节点能停在图外（甚至拖不回来）。
+  const x = Math.max(dragNode.r, Math.min(W - dragNode.r, cx - r.left));
+  const y = Math.max(dragNode.r, Math.min(H - dragNode.r, cy - r.top));
   if(Math.abs(x - dragNode.x) > 3 || Math.abs(y - dragNode.y) > 3) dragMoved = true;
   dragNode.x = x; dragNode.y = y;
+  // 立刻重绘：不等下一帧 tick。降频档（20fps）下等帧会让拖拽发黏，
+  // 而拖拽中的节点是 fixed，tick 里的积分也不会把它挪回来。
+  render();
 }
 function dragEnd(){
   if(!dragNode) return;
@@ -709,30 +728,37 @@ function dragEnd(){
   } else {
     openCard(n);
   }
+  wake();   // 放手后把能量拉回来，让邻居重新让位、图继续活着
 }
 
 function bindNode(g, n){
-  g.addEventListener("mousedown", e=>{ e.preventDefault(); startDrag(n); });
-  g.addEventListener("touchstart", e=>{ startDrag(n); }, {passive:true});
+  g.addEventListener("pointerdown", e=>{
+    // 只响应主键/触摸，避免右键菜单那种按下也把节点钉住
+    if(e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    try { g.setPointerCapture(e.pointerId); } catch(_){}
+    startDrag(n);
+  });
 
-  g.addEventListener("mouseenter", e=>{
+  g.addEventListener("pointerenter", e=>{
+    if(dragNode) return;              // 拖拽中不换 hover 对象，否则高亮乱跳
     hoverNode = n;
     // 悬停时把周围节点轻轻唤醒让位（低频即可，视觉上"点一下会推开邻居"）
     wake();
     applyHighlight();     // 邻接聚焦：邻居留亮、其余压暗 —— 悬浮感的主要来源
     showTip(n, e);
   });
-  g.addEventListener("mousemove", e=>moveTip(e));
-  g.addEventListener("mouseleave", ()=>{
+  g.addEventListener("pointermove", e=>{ if(!dragNode) moveTip(e); });
+  g.addEventListener("pointerleave", ()=>{
     if(hoverNode===n) hoverNode = null;
     applyHighlight();
     hideTip();
   });
 }
-svg.addEventListener("mousemove", e=>dragMove(e.clientX, e.clientY));
-window.addEventListener("mouseup", dragEnd);
-svg.addEventListener("touchmove", e=>{ const t=e.touches[0]; dragMove(t.clientX, t.clientY); }, {passive:true});
-svg.addEventListener("touchend", dragEnd);
+// move/up 挂 window：拖出 svg 范围仍跟手（配合 setPointerCapture 更稳）
+window.addEventListener("pointermove", e=>dragMove(e.clientX, e.clientY));
+window.addEventListener("pointerup", dragEnd);
+window.addEventListener("pointercancel", dragEnd);
 function showTip(n, e){
   const ax = AXES.find(a => a.key === curAxis) || AXES[0];
   const kindTxt = (n.kind==='cognition') ? '认知端（抖音等）' : '生产端（仓库）';
