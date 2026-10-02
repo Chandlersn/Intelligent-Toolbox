@@ -254,6 +254,7 @@ fn main() {
             // 悬浮球点按 → 打开收藏页（事件通道，见 open_main_page 注释）
             use tauri::Listener;
             app.listen("ball-tap", move |_| {
+                slog("ball-tap -> open main page");
                 open_main_page_in_browser();
             });
 

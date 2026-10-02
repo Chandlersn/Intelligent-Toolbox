@@ -78,7 +78,25 @@
     } catch (e) {}
   }
 
+  // 主题变量：与 web/theme.css 的 :root 保持一致（换肤时同步改这里）。
+  // ball.html 不加载完整 theme.css（其 body 背景会破坏窗口透明），只取变量。
+  function ensureThemeVars() {
+    if (document.getElementById("repo_theme_vars")) return;
+    var s = document.createElement("style");
+    s.id = "repo_theme_vars";
+    s.textContent = ":root{" +
+      "--bg:#FBFAF7;--surface:#FFFFFF;--surface-2:#F2F0EB;" +
+      "--ink:#23201B;--muted:#6B655C;--faint:#9A938A;--on-ink:#FBFAF7;" +
+      "--line:#E6E2DA;--line-soft:#EFECE5;" +
+      "--accent:#B5673E;--accent-2:#C67B52;--accent-ink:#FFFFFF;" +
+      "--accent-dim:rgba(181,103,62,.10);--accent-line:rgba(181,103,62,.34);" +
+      "--r:9px;--r-lg:13px;" +
+      "--sans:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif}";
+    document.head.appendChild(s);
+  }
+
   function ensureFxStyle() {
+    ensureThemeVars();
     if (document.getElementById("repo_ball_fx")) return;
     var s = document.createElement("style");
     s.id = "repo_ball_fx";
@@ -113,7 +131,8 @@
   // 非 Tauri 环境才退回浏览器剪贴板 API。
   function collectClipboard() {
     if (emod && emod.emit) {
-      emod.emit("ball-collect-clipboard");
+      var p = emod.emit("ball-collect-clipboard");
+      if (p && p.catch) p.catch(function (e) { probe({ probe: "clip-emit-err", err: String(e).slice(0, 120) }); });
       return;
     }
     readClipboard().then(function (txt) {
@@ -137,13 +156,18 @@
   // 双击动作：打开收藏主页。自定义命令对远程页被 ACL 拦，走事件通道（Rust 监听 ball-tap）。
   function openMainPage() {
     if (emod && emod.emit) {
-      emod.emit("ball-tap");
+      var p = emod.emit("ball-tap");
+      if (p && p.catch) p.catch(function (e) { probe({ probe: "tap-emit-err", err: String(e).slice(0, 120) }); });
     } else {
       window.open(location.origin + "/", "_blank");
     }
   }
 
   function makeBall() {
+    // 全局错误探针：任何未捕获异常都回报（诊断"点了没反应"类问题）
+    window.addEventListener("error", function (e) {
+      probe({ probe: "js-err", msg: String(e.message).slice(0, 160), where: String(e.filename || "").slice(-40) + ":" + e.lineno });
+    });
     // 环境探针：回报 Tauri API 注入状态（诊断远程页 IPC 授权是否生效）
     try {
       fetch("/api/ball_probe", {
@@ -274,6 +298,7 @@
     });
 
     // ---------- 右键菜单：临时扩窗显示，选完或点空白恢复 ----------
+    // 配色跟主题卡片走：白面 + 发丝线 + 墨字，悬停陶土淡底（对应 .btn:hover）。
     var menu = null;
     function showMenu() {
       if (menu) return;
@@ -285,18 +310,29 @@
       probe({ probe: "menu-open" });
       menu = document.createElement("div");
       menu.style.cssText = "position:fixed;left:6px;top:88px;right:6px;bottom:6px;" +
-        "background:rgba(35,32,27,.96);border-radius:12px;padding:6px;z-index:2147483645;" +
-        "font:13px/1 -apple-system,'Segoe UI',sans-serif;animation:ballfadein .12s ease";
+        "background:var(--surface,#FFFFFF);border:1px solid var(--line,#E6E2DA);" +
+        "border-radius:var(--r-lg,13px);padding:5px;z-index:2147483645;" +
+        "box-shadow:0 8px 24px rgba(35,32,27,.14);font:13px/1 var(--sans);" +
+        "animation:ballfadein .12s ease";
       [["打开收藏主页", openMainPageAndClose],
        ["收藏剪贴板链接", collectAndClose],
        ["退出悬浮球", quitAndClose]].forEach(function (item) {
         var it = document.createElement("div");
         it.textContent = item[0];
-        it.style.cssText = "padding:10px 12px;border-radius:8px;color:" + C.onInk +
+        it.style.cssText = "padding:9px 11px;border-radius:var(--r,9px);color:var(--ink,#23201B)" +
           ";cursor:pointer;white-space:nowrap";
-        it.addEventListener("mouseenter", function () { it.style.background = "rgba(255,255,255,.14)"; });
-        it.addEventListener("mouseleave", function () { it.style.background = ""; });
-        it.addEventListener("click", function (ev) { ev.stopPropagation(); item[1](); });
+        it.addEventListener("mouseenter", function () {
+          it.style.background = "var(--accent-dim,rgba(181,103,62,.10))";
+          it.style.color = "var(--accent,#B5673E)";
+        });
+        it.addEventListener("mouseleave", function () {
+          it.style.background = ""; it.style.color = "var(--ink,#23201B)";
+        });
+        it.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          probe({ probe: "menu-item", label: item[0] });
+          item[1]();
+        });
         menu.appendChild(it);
       });
       document.body.appendChild(menu);
@@ -319,8 +355,23 @@
     function collectAndClose() { hideMenu(); collectClipboard(); }
     function quitAndClose() {
       hideMenu();
-      if (emod && emod.emit) emod.emit("ball-quit");
-      else if (core && core.invoke) core.invoke("open_main_page"); // 占位不可达
+      var w = curWin();
+      // 首选直接销毁窗口（最后一个窗口关闭时 Tauri 自动退出），
+      // 事件通道 ball-quit 作兜底（Rust 收到后 exit(0)）。
+      if (w && w.destroy) {
+        try {
+          var pr = w.destroy();
+          if (pr && pr.catch) pr.catch(function (e) { emitQuit(e); });
+          return;
+        } catch (err) { emitQuit(err); }
+      } else { emitQuit("no-destroy"); }
+    }
+    function emitQuit(why) {
+      probe({ probe: "quit-fallback", why: String(why).slice(0, 120) });
+      if (emod && emod.emit) {
+        var p = emod.emit("ball-quit");
+        if (p && p.catch) p.catch(function (e) { probe({ probe: "quit-emit-err", err: String(e).slice(0, 120) }); });
+      }
     }
     ball.addEventListener("contextmenu", function (e) {
       e.preventDefault();
