@@ -125,8 +125,20 @@
   /* 钉住瞬间的吸附回弹 */
   .node.snap{ animation:snap .42s cubic-bezier(.2,1.6,.35,1); }
   @keyframes snap{ 0%{transform:scale(1.14)} 55%{transform:scale(.95)} 100%{transform:scale(1)} }
-  /* 点击选中：一次性扩散 */
-  .node.ping .halo{ animation:ping .7s ease-out; }
+  /* 点击选中 / 碰撞：一次性扩散。
+     碰撞脉冲要比选中稍短促 —— 选中是"我点的你"，碰撞是"你被撞到了"，
+     后者发生在任何一对节点之间，节奏拖沓会变成一片糊影，所以更短、更淡。 */
+  .node.ping .halo{ animation:ping .42s ease-out; }
+  @keyframes ping{ 0%{ opacity:.75; transform:scale(.6) } 75%,100%{ opacity:0; transform:scale(2.1) } }
+  /* 拖拽中的节点：放大 + 一圈实线抓取环。
+     拖动时图里同时有几十个节点在动，没有明确的"我抓着谁"信号，
+     手感就会散掉 —— 视觉上必须把被拖的那个钉成焦点。 */
+  .node.dragging{ z-index:5; }
+  .node.dragging .core{ animation:dragPulse .9s ease-in-out infinite; }
+  @keyframes dragPulse{ 0%,100%{ transform:scale(1.1) } 50%{ transform:scale(1.24) } }
+  .node.dragging .halo{ opacity:.55; animation:none; stroke-width:2.6; }
+  /* 拖拽时非相关节点压得更暗：把注意力收到"被抓着的 + 它连着的"这一小撮 */
+  svg.dragging{ --dim-v:.07; }
   /* 边：普通边从源点长出来；桥接边常驻流动 —— 那是"两类收藏正在互相激发"的关系。
      入场动画用 backwards 而非 both：播完就把控制权交回类选择器，
      否则 .hot / .dim 的高亮与变暗会被动画的终值锁死（那两套是状态，不是动画）。 */
@@ -142,9 +154,16 @@
   @keyframes fadeIn{ from{ opacity:0 } to{ opacity:1 } }
   @keyframes flow{ to{ stroke-dashoffset:-10 } }
   /* 节点一多（批量导入后）就降档：上百个元素各自呼吸会吃帧，宁可少一点花样也别卡。
-     这是性能保护，不是设置项 —— 页面永远在动，节点多时自动换种方式动。 */
+     这是性能保护，不是设置项 —— 页面永远在动，节点多时自动换种方式动。
+     注意不能 display:none 掉 halo —— 那是碰撞脉冲的唯一载体，
+     砍掉它等于"节点多的时候碰撞就没有反馈了"，降级降到了功能上。 */
   .lite .node .core{ animation:none; }
   .lite .node .halo{ display:none; }
+  .lite .node.dragging .core{ animation:dragPulse .9s ease-in-out infinite; }
+  .lite .node.dragging .halo{ display:block; opacity:.55; animation:none; }
+  /* 碰撞脉冲在 lite 档也保留：它是一次性动画，代价与节点数无关（N 个里的 1 个），
+     而没有它碰撞就完全不可见 —— 这属于"砍花样"而不是"砍功能"。 */
+  .lite .node.ping .halo{ display:block; animation:ping .42s ease-out; }
   /* 节点多时的替代动效：整张图极缓慢地轻微起伏（一个动画顶所有节点，开销恒定）。
      单节点呼吸的代价是 N 个无限动画，N 大了会吃帧；改成一个组动画后恒定。 */
   .lite .node .pos{ animation:sway 9s ease-in-out infinite; }
@@ -273,6 +292,19 @@ let nodes = [], edges = [], byId = {}, W = 0, H = 0, alpha = 1, selId = null;
 // 力场的"环境下限"：alpha 向它衰减而不是归零，图永远不冻结。
 // 0.03 对应 d3 生态常用的 alphaTarget 0.02~0.05 区间（"微妙有生命感"档）。
 const ALPHA_FLOOR = 0.03;
+
+// ---- 物理常量（集中一处，便于按手感调）----
+const LINK_REST   = 108;   // 边的理想长度（弹簧平衡位置）
+const LINK_K      = 0.055; // 边弹簧刚度：拖动时"有连线就跟着动"的来源
+const LINK_DAMP   = 0.22;  // 边的轴向阻尼：抑制沿边的高频抖动
+const REPEL_K     = 2600;  // 斥力强度（除以距离平方）
+const REPEL_CAP   = 6.5;   // 斥力封顶：贴近时不爆炸
+const CENTER_K    = 0.0022;// 中心引力：防止整张图被拖到边界外
+const DAMP        = 0.82;  // 全局速度阻尼（略高于临界，弹几下就稳）
+const SENS_MIN    = 0.30;  // 稳定态的速度灵敏度下限：低于 0.2 图会冻成静物
+const RESTITUTION = 0.72;  // 弹性碰撞恢复系数：0=完全非弹性(死球)，越接近 1 越弹
+const CONTACT_PAD = 8;     // 碰撞接触面之外的额外间隙（给文字留呼吸）
+const DRAG_BOOST  = 1.0;   // 拖拽时边刚度倍率（让被拖动的牵引更明显）
 
 // 高斯模糊滤镜：给节点做同色辉光（主流量产图谱的"浮起感"来源之一）。
 // 滤镜 def 会被 initGraph 的"清空 svg"抹掉，所以存起来、每次重建时再挂回去。
@@ -547,72 +579,149 @@ function neighbors(id){
 }
 
 function tick(){
-  // 斥力（力封顶：节点贴近时不爆炸，只温和推开）
-  for(let i=0;i<nodes.length;i++){
-    for(let j=i+1;j<nodes.length;j++){
-      const a=nodes[i], b=nodes[j];
-      let dx=a.x-b.x, dy=a.y-b.y;
-      let d2=dx*dx+dy*dy || 0.01;
-      let d=Math.sqrt(d2);
-      let f=Math.min(2600/d2, 5);
-      // 悬停中的节点像有磁性：邻居被轻轻推开，"点它周围会让位"要看得出来
-      if((a===hoverNode || b===hoverNode) && !a.fixed && !b.fixed) f += 3.4;
-      let fx=dx/d*f, fy=dy/d*f;
-      a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
-    }
-  }
-  // 碰撞力（d3 forceCollide 的等价实现）：按"节点半径 + 文字占位"硬性推开。
-  // 之前只有软性斥力，近距离时封顶在 5 就推不动了，节点和文字会叠在一起；
-  // 这项是主流通用做法，也是"节点之间有真实间距"的前提。
-  for(let i=0;i<nodes.length;i++){
-    for(let j=i+1;j<nodes.length;j++){
-      const a=nodes[i], b=nodes[j];
-      let dx=a.x-b.x, dy=a.y-b.y;
-      let d=Math.sqrt(dx*dx+dy*dy) || 0.01;
-      const min = a.r + b.r + 26;      // 26 ≈ 节点名文字的横向占位
+  const N = nodes.length;
+  // 拖拽中被拖节点的热度衰减得快些：拖动要给邻居让位的能量，
+  // 但松手后不该让整张图一直晃。0.55 → 约 20 帧内回落到环境档。
+  const drag = dragNode;
+  /* 速度积分的灵敏度系数 f2 —— 这里是全篇最容易写错的一处：
+     一开始我写成 x += vx*alpha（alpha 地板 0.03 → 所有力只剩 3%，拖动时邻居完全不动）；
+     改成 alpha² 更是雪上加霜（0.03² = 0.0009，稳定态直接冻结）。
+     正确做法是把「布局收敛进度」和「物理灵敏度」解耦：
+       f2 = SENS_MIN + alpha*(1-SENS_MIN)
+     稳定态（alpha=0.03）仍有 SENS_MIN 的灵敏度 → 碰撞、惯性、牵引都还在；
+     布局期（alpha→1）接近满速，收敛快。SENS_MIN 不能低于 0.2，
+     否则一稳定整张图就变成静物。 */
+  const f2 = drag ? 1 : (SENS_MIN + alpha * (1 - SENS_MIN));
+
+  /* ---------- 1. 成对力：斥力 + 弹性碰撞（同一趟循环，O(N²) 只走一次） ---------- */
+  for(let i=0;i<N;i++){
+    const a = nodes[i];
+    for(let j=i+1;j<N;j++){
+      const b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx*dx + dy*dy;
+      // 完全重合时给一个确定的随机方向，否则除零会让节点原地抖动
+      if(d2 < 0.0001){ dx = (Math.random()-.5)*2; dy = (Math.random()-.5)*2; d2 = dx*dx+dy*dy; }
+      const d = Math.sqrt(d2);
+      const nx = dx/d, ny = dy/d;          // 单位法线：a → b
+
+      // 斥力（软性，近距离封顶，避免糊成一团时的数值爆炸）
+      let f = Math.min(REPEL_K/d2, REPEL_CAP);
+      // 悬停/拖拽中的节点像有磁性：邻居被轻轻推开，"点它周围会让位"要看得出来
+      if(a===hoverNode || b===hoverNode || a===drag || b===drag) f += 3.2;
+      a.vx += nx*f; a.vy += ny*f;
+      b.vx -= nx*f; b.vy -= ny*f;
+
+      /* ---------- 2. 弹性球碰撞（真正的冲量法） ----------
+         之前那版只是"位置推开"，没有速度交换：撞完速度立刻被阻尼吃掉，
+         看起来像硬生生隔开而不是弹开。真实的弹性碰撞要三步：
+           ① 法向相对速度为负（正在靠近）→ 施加冲量交换法向速度
+           ② 恢复系数 e 决定"弹回多少"（e=0 死球，e=1 完全弹性）
+           ③ 切向保留摩擦（不打滑），这是"真实感"的一半来源 */
+      const min = a.r + b.r + CONTACT_PAD;
       if(d >= min) continue;
-      const f = (min - d) * 0.09;      // 重叠越深推得越狠
-      let fx=dx/d*f, fy=dy/d*f;
-      if(!a.fixed && !a.pinned){ a.vx+=fx; a.vy+=fy; }
-      if(!b.fixed && !b.pinned){ b.vx-=fx; b.vy-=fy; }
+      const aFree = !a.fixed && !a.pinned;
+      const bFree = !b.fixed && !b.pinned;
+      if(!aFree && !bFree) continue;
+
+      // 质量按面积算：半径大的节点撞起来更有份量（也是最直观的物理直觉）
+      const ma = a.r*a.r, mb = b.r*b.r;
+      const invA = aFree ? 1/ma : 0;
+      const invB = bFree ? 1/mb : 0;
+      const invSum = invA + invB;
+      if(invSum === 0) continue;
+
+      // ① 位置修正：先把重叠推开（不修正的话后面算冲量没有意义）
+      const overlap = min - d;
+      const corr = overlap * 0.5;
+      if(aFree){ a.x += nx*corr*(invA/invSum); a.y += ny*corr*(invA/invSum); }
+      if(bFree){ b.x -= nx*corr*(invB/invSum); b.y -= ny*corr*(invB/invSum); }
+
+      // ② 法向冲量：v_n < 0 表示正在靠近，需要交换法向速度
+      //    冲量大小 j = -(1+e)·v_n / (1/m_a + 1/m_b)
+      //    被拖动的节点不参与积分（fixed），它的速度体现为指针位移，
+      //    这里把位移速度并进来，拖过去撞上的力度才和手速匹配。
+      const avx = a.vx + (a===drag ? a.dvx||0 : 0), avy = a.vy + (a===drag ? a.dvy||0 : 0);
+      const bvx = b.vx + (b===drag ? b.dvx||0 : 0), bvy = b.vy + (b===drag ? b.dvy||0 : 0);
+      const rvx = bvx - avx, rvy = bvy - avy;
+      const vn = rvx*nx + rvy*ny;       // <0 = 接近中
+      if(vn < 0){
+        const jimp = -(1 + RESTITUTION) * vn / invSum;
+        if(aFree){ a.vx += jimp*nx*invA; a.vy += jimp*ny*invA; }
+        if(bFree){ b.vx -= jimp*nx*invB; b.vy -= jimp*ny*invB; }
+        // ③ 切向摩擦：冲量抵消一部分切向相对速度 → 擦过去会"打滑"，
+        //    这是碰撞看起来有摩擦、而不是两块玻璃相撞的关键
+        const tx = -ny, ty = nx;
+        const vt = rvx*tx + rvy*ty;
+        const jt = -vt / invSum * 0.18;  // 0.18 ≈ 摩擦系数（经验值，太大像胶）
+        if(aFree){ a.vx += jt*tx*invA; a.vy += jt*ty*invA; }
+        if(bFree){ b.vx -= jt*tx*invB; b.vy -= jt*ty*invB; }
+        // 撞上了给一下视觉脉冲：碰撞必须有可见反馈，否则"弹开"看着像抖动
+        if(overlap > 1.2 && aFree && a!==drag) pingNode(a);
+        if(overlap > 1.2 && bFree && b!==drag) pingNode(b);
+      }
     }
   }
-  // 引力(边)
+
+  /* ---------- 3. 边 = 弹簧（拖动牵引的主要来源） ----------
+     之前的问题是常数太小（0.018）且被 alpha 压到 3%，等于没连。
+     现在：刚度提到 0.055，并且积分不乘 alpha → 拖动时邻居被明确带着走。 */
+  const lk = LINK_K * (drag ? 2.2*DRAG_BOOST : 1);
   edges.forEach(e=>{
     const a=byId[e.source], b=byId[e.target];
     if(!a||!b) return;
-    let dx=b.x-a.x, dy=b.y-a.y;
-    let d=Math.sqrt(dx*dx+dy*dy)||0.01;
-    let f=(d-92)*0.018;
-    let fx=dx/d*f, fy=dy/d*f;
-    a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const d=Math.sqrt(dx*dx+dy*dy)||0.01;
+    const nx=dx/d, ny=dy/d;
+    // 胡克力弹簧：距离超过理想长度拉回来，短于则推开
+    let f=(d-LINK_REST)*lk;
+    // 轴向阻尼：沿边方向的速度差会衰减，抑制"弹簧高频抖动"
+    // （没有它，边会像橡皮筋一样永久振荡，看起来很假）
+    if(!a.fixed && !a.pinned && !b.fixed && !b.pinned){
+      const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
+      f += (rvx*nx + rvy*ny) * LINK_DAMP;
+    }
+    if(!a.fixed && !a.pinned){ a.vx += nx*f; a.vy += ny*f; }
+    if(!b.fixed && !b.pinned){ b.vx -= nx*f; b.vy -= ny*f; }
   });
+
   // 中心引力
   nodes.forEach(n=>{
-    n.vx += (W/2 - n.x)*0.0018;
-    n.vy += (H/2 - n.y)*0.0018;
+    n.vx += (W/2 - n.x)*CENTER_K;
+    n.vy += (H/2 - n.y)*CENTER_K;
   });
+
   // 环境噪声力：d3 生态的标准做法（alphaTarget + 每帧随机扰动）。
   // 关键在"随机"——规则的正弦摆动看着像钟摆，随机扰动才像水里的浮尘。
   // 幅度极小（±0.09），视觉上只是持续微微挪动，不会打乱已收敛的布局。
-  if(alpha > ALPHA_FLOOR){
-    nodes.forEach(n=>{
-      if(n.fixed || n.pinned) return;
+  if(alpha > ALPHA_FLOOR*0.9){
+    for(let i=0;i<N;i++){
+      const n = nodes[i];
+      if(n.fixed || n.pinned) continue;
       n.vx += (Math.random()-0.5) * 0.18;
       n.vy += (Math.random()-0.5) * 0.18;
-    });
+    }
   }
-  // 积分（拖动中的节点与用户钉住的节点不参与，摆好的位置不被动）
-  nodes.forEach(n=>{
-    if(n.fixed || n.pinned) return;
-    n.vx*=0.84; n.vy*=0.84;
-    n.x += n.vx*alpha; n.y += n.vy*alpha;
+
+  /* ---------- 4. 积分 ----------
+     关键改动：x += vx*f2，f2 有下限（见上），而不是 x += vx*alpha。
+     那样写等于把所有力（边弹簧、碰撞冲量）都按 alpha 打折 ——
+     alpha 地板是 0.03，3% 的牵引力等于"没有连线"，
+     这正是"拖动时邻居一动不动"的根因。 */
+  for(let i=0;i<N;i++){
+    const n = nodes[i];
+    if(n.fixed || n.pinned) continue;
+    n.vx *= DAMP; n.vy *= DAMP;
+    // 限速：防止大力拖拽/连环碰撞把节点甩飞（也是 d3 的常见做法）
+    const sp = Math.hypot(n.vx, n.vy);
+    if(sp > 24){ n.vx = n.vx/sp*24; n.vy = n.vy/sp*24; }
+    n.x += n.vx*f2; n.y += n.vy*f2;
     n.x = Math.max(n.r, Math.min(W-n.r, n.x));
     n.y = Math.max(n.r, Math.min(H-n.r, n.y));
-  });
+  }
   // alpha 向"环境下限"衰减而不是归零：力场一直有微弱能量，图永远不冻结。
   // 这是 d3 alphaTarget 的等价物，也是主流图谱"永远活着"的根本原因。
-  alpha += (ALPHA_FLOOR - alpha) * 0.02;
+  alpha += (ALPHA_FLOOR - alpha) * (drag ? 0.04 : 0.02);
   render();
   // 调度交给外层的 loop() 决定（满帧 / 20fps 降频），tick 只管力学。
   loop();
@@ -681,6 +790,22 @@ function render(){
   });
 }
 
+/* 碰撞/选中时的一次性扩散脉冲。碰撞必须有可见反馈：
+   两个球"弹开"如果没有任何视觉提示，眼睛会把它读成"抖动"而不是"撞了一下"。 */
+let _pingBusy = null;
+function pingNode(n){
+  const el = (window.__nodeEls || []).find(o => o.n === n);
+  if(!el) return;
+  // 同一节点在一次碰撞里可能被反复命中（多对接触），节流一下
+  const now = performance.now();
+  if(_pingBusy && _pingBusy.get(n) && now - _pingBusy.get(n) < 220) return;
+  if(!_pingBusy) _pingBusy = new Map();
+  _pingBusy.set(n, now);
+  el.g.classList.remove("ping");
+  void el.g.getBoundingClientRect();   // 强制回流，让动画能重新触发
+  el.g.classList.add("ping");
+}
+
 /* ---------- 交互 ---------- */
 /* 用 Pointer Events 而不是 mouse/touch 分开绑：
    ① 一套代码同时覆盖鼠标、触屏、手写笔；
@@ -692,7 +817,14 @@ let dragNode = null, dragMoved = false, hoverNode = null;
 function startDrag(n){
   dragNode = n; dragMoved = false;
   n.fixed = true;
-  alpha = Math.max(alpha, 0.35);  // 轻加热：拖动时邻近节点轻微让位，不显死板
+  // 拖动期间持续"保温"在高温（tick 里每次都会拉回），而不是只在按下瞬间加热一次：
+  // 邻居要在整个拖动过程中都被带着走，一次性加热撑不过几帧。
+  alpha = Math.max(alpha, 0.5);
+  // 被拖的节点放大 + 全图压暗：拖动时"谁被我抓着"要一眼看出来
+  const el = (window.__nodeEls || []).find(o => o.n === n);
+  if(el) el.g.classList.add("dragging");
+  svg.classList.add("dragging");
+  applyHighlight();
   wake();
 }
 function dragMove(cx, cy){
@@ -703,6 +835,10 @@ function dragMove(cx, cy){
   const x = Math.max(dragNode.r, Math.min(W - dragNode.r, cx - r.left));
   const y = Math.max(dragNode.r, Math.min(H - dragNode.r, cy - r.top));
   if(Math.abs(x - dragNode.x) > 3 || Math.abs(y - dragNode.y) > 3) dragMoved = true;
+  // 记录拖拽速度：被拖节点自身不参与积分，但邻居要感受到"被快速甩过"，
+  // 这个速度用来给碰撞一个额外的冲击分量（拖过去撞上的力度才够）。
+  dragNode.dvx = x - dragNode.x;
+  dragNode.dvy = y - dragNode.y;
   dragNode.x = x; dragNode.y = y;
   // 立刻重绘：不等下一帧 tick。降频档（20fps）下等帧会让拖拽发黏，
   // 而拖拽中的节点是 fixed，tick 里的积分也不会把它挪回来。
@@ -712,7 +848,12 @@ function dragEnd(){
   if(!dragNode) return;
   const n = dragNode; dragNode = null;
   n.fixed = false;
+  // 交出手上的那一刻把速度"扔"给节点：松手后它应该顺着拖拽方向继续滑一小段，
+  // 再被邻居的碰撞/边弹簧拦住。这是"物体有惯性"的关键体感，
+  // 直接钉死的话观感就是"贴片被按在屏幕上"。
   if(dragMoved){
+    n.vx = Math.max(-18, Math.min(18, (n.dvx||0) * 0.55));
+    n.vy = Math.max(-18, Math.min(18, (n.dvy||0) * 0.55));
     // 摆过位 = 用户要它待在这：钉住 + 记忆，放手后被力场拉不回去
     n.pinned = true;
     n.bx = n.x; n.by = n.y;
@@ -728,6 +869,10 @@ function dragEnd(){
   } else {
     openCard(n);
   }
+  // 去掉拖拽高亮，恢复正常聚焦
+  window.__nodeEls.forEach(({g})=>g.classList.remove("dragging"));
+  svg.classList.remove("dragging");
+  applyHighlight();
   wake();   // 放手后把能量拉回来，让邻居重新让位、图继续活着
 }
 
@@ -795,10 +940,13 @@ function toggleDomain(name){
 }
 function applyHighlight(){
   const domainFilter = selId && String(selId).startsWith("D:") ? selId.slice(2) : null;
-  // 聚焦源：选中优先，其次 hover。两者都没有就全亮。
+  // 聚焦源：拖拽中的节点 > 选中 > hover。都没有就全亮。
   // hover 邻接聚焦是"悬浮感"的主要来源 —— 鼠标移上去，邻居留亮、其余压暗、
   // 连边点亮，那一瞬整张图才像"活"的（主流量产图谱都这么做，如 Neo4j Bloom / Cytoscape）。
-  const focusId = (selId && !String(selId).startsWith("D:")) ? selId
+  // 拖拽时焦点必须让给被拖的节点：把它连着的邻居点亮，
+  // 用户才能看见"我拖的这一串"——力学上的牵引和视觉上的牵引必须一致。
+  const focusId = dragNode ? dragNode.id
+                 : (selId && !String(selId).startsWith("D:")) ? selId
                  : (hoverNode ? hoverNode.id : null);
   const focusing = focusId !== null;
   const fnb = focusing ? neighbors(focusId) : null;
