@@ -58,12 +58,20 @@
   } catch (e) {}
 
   // 跨页跳转网关：被嵌在壳 iframe 里时交由父窗切 tab（保持各页常驻），独立打开时整页跳。
+  // 沿父窗链向上找壳：图谱页(map)嵌在探索页(explore)的 iframe 里，是两层嵌套，
+  // 只查一层 parent 会找不到 __shellNav，导致只把图谱 iframe 自己换成卡片页——
+  // 外面还套着探索页，看起来就是"卡片页重复显示"。找到壳就交给壳切 tab；
+  // 找不到壳（普通页面里内嵌）则跳顶层窗口，同样避免只换掉内层 iframe。
   window.goPage = function (href) {
     try {
-      if (window.self !== window.top && window.parent && window.parent.__shellNav) {
-        window.parent.__shellNav(href);
-        return;
+      var w = window;
+      while (w && w !== w.top) {
+        if (w.parent && w.parent.__shellNav) { w.parent.__shellNav(href); return; }
+        w = w.parent;
       }
+    } catch (e) {}
+    try {
+      if (window.top && window.top !== window) { window.top.location.href = href; return; }
     } catch (e) {}
     location.href = href;
   };
