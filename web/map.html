@@ -42,6 +42,10 @@
     border:1px solid var(--accent-line); border-radius:20px; padding:1px 8px; margin-bottom:6px; }
   .empty{ font-size:12px; color:var(--muted); padding:8px 2px; }
   .note{ font-size:11px; color:var(--faint); margin-top:18px; line-height:1.6; }
+  /* 诊断行：把"当前动效档 / 系统是否要求减弱动效 / 页面加载时间"摊开写明。
+     这类"改了没变化"的问题最耗时间，页面上能自证就省一轮来回。 */
+  .note.diag{ margin-top:10px; padding-top:8px; border-top:1px dashed var(--line);
+    font-family:var(--mono); font-size:10.5px; }
   .toolbar{ position:absolute; top:12px; left:12px; display:flex; gap:8px; }
   .btn{ font-size:12px; color:var(--muted); background:var(--surface);
     border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; }
@@ -119,10 +123,14 @@
   /* 节点一多（批量导入后）就降档：上百个元素各自呼吸会吃帧，宁可少一点花样也别卡 */
   .lite .node .core{ animation:none; }
   .lite .node .halo{ display:none; }
-  @media (prefers-reduced-motion: reduce){
-    .node .core,.node .halo,.node.snap,.edge,.edge.bridge{ animation:none !important; }
-    .node{ transition:none; }
-  }
+  /* 「动效：关」档（系统减弱动效时默认进这里，也可用工具栏按钮手动切）：
+     停掉持续性的呼吸与慢漂，保留入场生长和 hover 缩放 —— 一次性动作不引发不适，
+     全关的话图谱就退回成一张死图，等于把功能关了。 */
+  .still .node .core{ animation:pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards; }
+  .still .node .halo{ display:none; }
+  .still .node.snap{ animation:none; }
+  .still .edge.bridge{ animation:fadeIn .45s ease var(--d,0s) backwards; }
+  .still .node{ transition:transform .2s ease, opacity .25s ease; }
 </style>
 </head>
 <body data-nav="map" data-page-node-id="Sf70JOAuR1xdCYFUaI4h1Z">
@@ -136,6 +144,7 @@
     <div class="toolbar" data-page-node-id="qCdaSBNuLsdDI5v6YG6oeD">
       <span id="axisBtns" data-page-node-id="qOJlQr9TTqLuyGTqMKqtvf"></span>
       <span class="btn" id="btn-reset" data-page-node-id="gcudfyn7q8pABBaGJb3Rtn">重置视图</span>
+      <span class="btn" id="btn-motion" title="呼吸与慢漂的开关（若系统设了「减弱动效」，可在此手动开回来）" data-page-node-id="fm7Kq2pLr4xNvB8sTgWcZa">动效：开</span>
     </div>
     <svg id="svg" data-page-node-id="2sECMVmS1gg7lY92rCOUWg"></svg>
   </div>
@@ -170,6 +179,7 @@
     <div class="legend-k" data-page-node-id="KNHbJnCkfV1ErJmGWU2xAK"><span class="dot" data-page-node-id="44TdvClOePHSGBERVpAvb7"></span>认知端节点（抖音等内容）</div>
     <div class="note" data-page-node-id="Dt8DuGEiilXSdQNeLUn9Eb">生产端节点为实心圆；认知端节点外圈加虚线环。</div>
   <div class="note" data-page-node-id="P2OXaURboPipGfpaatilyI">拖动节点可手动摆位：摆过的节点会钉在原地（带细描边标记），重开页面也保持；点「重置视图」全部重新散开。</div>
+  <div class="note diag" id="diag" data-page-node-id="Di4Gn7XzQbW9rTkLpV2mHs"></div>
   </aside>
 </div>
 
@@ -431,6 +441,8 @@ function initGraph(){
   alpha = 1;
   // 节点多就降档：上百个元素各自呼吸会吃帧，宁可少花样别卡
   svg.classList.toggle("lite", nodes.length > 90);
+  svg.classList.toggle("still", motionOff);
+  if(typeof renderDiag === "function") renderDiag();
   // 建边
   const edgeEls = edges.map((e,i)=>{
     const l = document.createElementNS(NS,"line");
@@ -549,9 +561,32 @@ function tick(){
   requestAnimationFrame(tick);
 }
 let rafOn = false, idleTimer = null, wanderT = 0;
-// 节点多 / 系统开了"减弱动效"就不做慢漂：宁可静止也别卡、别晃
-const REDUCED = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-function idleAllowed(){ return !REDUCED && nodes.length <= 160; }
+// 动效档位。系统「减弱动效」只降级不停用：全关等于把图谱变回死图（功能缺失）。
+// 用户可在工具栏「动效」按钮手动覆盖 —— 显式选择 > 系统偏好。
+const SYS_REDUCED = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+let motionOff = SYS_REDUCED;          // 当前是否关着持续动效
+const MOTION_KEY = "repo_map_motion";
+try { const v = localStorage.getItem(MOTION_KEY); if(v !== null) motionOff = (v === "0"); } catch(e){}
+function idleAllowed(){ return !motionOff && nodes.length <= 160; }
+function applyMotion(){
+  const b = document.getElementById("btn-motion");
+  if(b){
+    b.textContent = "动效：" + (motionOff ? "关" : "开");
+    b.classList.toggle("on", !motionOff);
+    b.title = motionOff
+      ? "当前已关：节点不呼吸、不慢漂。若是系统「减弱动效」导致的，点此手动开回来。"
+      : "节点呼吸与慢漂的开关。";
+  }
+  // 切档立刻见效：开 -> 唤醒慢漂；关 -> 停表并把位置收回基准
+  if(motionOff){
+    if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
+    rafOn = false;
+    nodes.forEach(n=>{ if(n.pinned) return; if(typeof n.bx === "number"){ n.x = n.bx; n.y = n.by; } });
+    render();
+  } else {
+    alpha = Math.max(alpha, 0.25); wake();
+  }
+}
 function wake(){
   if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
   if(rafOn) return;
@@ -735,6 +770,26 @@ document.getElementById("btn-reset").onclick = ()=>{
 };
 // 轴切换逻辑已在 renderToolbar() 里按动态按钮绑定；这里不再重复绑定写死的按钮。
 window.addEventListener("resize", ()=>{ resize(); wake(); });
+
+// 动效开关：显式选择压过系统偏好。切档立刻生效，不用刷新。
+document.getElementById("btn-motion").onclick = function(){
+  motionOff = !motionOff;
+  try { localStorage.setItem(MOTION_KEY, motionOff ? "0" : "1"); } catch(e){}
+  svg.classList.toggle("still", motionOff);
+  applyMotion();
+  renderDiag();
+};
+function renderDiag(){
+  const el = document.getElementById("diag");
+  if(!el) return;
+  const lite = svg.classList.contains("lite");
+  el.textContent = "动效 " + (motionOff ? "关" : "开")
+    + (SYS_REDUCED ? "（系统要求减弱动效）" : "")
+    + (lite ? " · 已降档（节点多）" : "")
+    + " · 页面载入 " + new Date().toLocaleTimeString("zh-CN");
+}
+applyMotion();
+renderDiag();
 
 // ---- AI 缺角识别：模型基于收藏画像推「还想要哪类领域」----
 function loadAiGaps(){
