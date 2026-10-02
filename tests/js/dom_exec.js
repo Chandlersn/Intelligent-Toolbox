@@ -67,7 +67,7 @@ global.fetch = window.fetch;
 
 // ---- 注入并抓取内部函数 ----
 const wrapped = src + `
-;global.__api = { tick, wake, startDrag, dragMove, dragEnd, initGraph, isFree, inSettle,
+;global.__api = { tick, wake, loop, startDrag, dragMove, dragEnd, initGraph, isFree, inSettle,
   get nodes(){return nodes;}, set nodes(v){nodes=v;},
   get byId(){return byId;}, set byId(v){byId=v;},
   get edges(){return edges;}, set edges(v){edges=v;},
@@ -236,7 +236,27 @@ harness([ mk("A",300,380,14,true), mk("B",430,380,12,true) ], [{source:"A",targe
               (pass?"OK":"FAIL")+"  (用了"+frames+"帧)");
 }
 
+// ===== 场景 5：调度器一致性 —— 必须走真实的 loop() + rAF，不能手动循环 tick() =====
+// 这个场景是"松手惯性演到一半被冻住 / 图永远停不下来"的唯一可靠回归网：
+// 那两个 bug 的根源都在调度器（loop 的续排条件 ≠ tick 的 alive 判据），
+// 而手动循环 api.tick() 会完全绕过 loop()，所以前面 4 个场景全绿也照样漏掉。
+// 桩里 rAF 只是把回调排进 rafQ，这里把它排空 —— 排空即代表调度器自己停表了。
+harness([ mk("A",300,380,14), mk("B",560,300,12) ], [{source:"A",target:"B"}]);
+{
+  api.alpha = 0;                 // 从 0 起：wake() 之外的路径也要能被调度器接住
+  api.alpha = 1;                 // 模拟 initGraph 结尾：alpha=1 然后 loop()
+  api.loop();
+  let frames = 0;
+  while(rafQ.length && frames < 1500){ const fn = rafQ.shift(); fn(); frames++; }
+  const stopped = api.alpha === 0 && rafQ.length === 0;
+  const pass = stopped && frames < 1500;
+  allOk = allOk && pass;
+  console.log("[场景5 调度器] 用真实 loop()+rAF 驱动：自行停表=" + stopped +
+              " 用了" + frames + "帧（上限1500）  →  " +
+              (pass ? "OK 调度器会自己停" : "FAIL 死循环/半路冻住（loop 与 alive 判据不一致）"));
+}
+
 console.log("");
-console.log(allOk ? "浏览器环境验证通过（含惯性滑行 + 撞已摆节点 + 链式牵引 + 静止性）"
+console.log(allOk ? "浏览器环境验证通过（惯性滑行 + 撞已摆节点 + 链式牵引 + 静止性 + 调度器自行停表）"
                   : "浏览器环境验证未通过");
 process.exit(allOk?0:1);

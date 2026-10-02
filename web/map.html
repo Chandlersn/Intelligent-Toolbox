@@ -386,9 +386,19 @@ function ensureDefs(){
   if(!defs.querySelector("#gblur")) defs.innerHTML = BLUR_SVG;
 }
 
+/* 画布尺寸。★ 关键防呆：图谱页是嵌在 explore.html 里且初始 hidden 的 iframe，
+   隐藏状态下 getBoundingClientRect() 返回 0×0 —— 那会让所有节点被初始化到 (0,0)，
+   再被 tick 的钳位 max(r, min(W-r, x)) 全部钉死在左上角成一坨，物理推不动
+   （表现就是"节点缩在左上角 + 物理完全没效果"）。所以无效尺寸必须拒绝，
+   用一个合理的兜底画布，等真正显示出来再由 ResizeObserver 换成真实尺寸。 */
+const FALLBACK_W = 960, FALLBACK_H = 600;
 function resize(){
   const r = svg.getBoundingClientRect();
-  W = r.width; H = r.height;
+  const w = r.width, h = r.height;
+  const valid = w >= 40 && h >= 40;
+  W = valid ? w : ((W >= 40) ? W : FALLBACK_W);
+  H = valid ? h : ((H >= 40) ? H : FALLBACK_H);
+  return valid;
 }
 
 // 拖拽布局记忆：把节点坐标存进 localStorage，重开页面 / 切换轴都保持用户摆好的样子。
@@ -642,7 +652,7 @@ function initGraph(){
   alpha = 1;
   _wasAlive = false;   // 强制下一帧重设 moving 类
   svg.classList.add("moving");
-  fitView(false);      // 相机自适应铺满：切轴 / 重置 / 初次加载都从「整图恰好入画」开始
+  _fitPending = true;  // 等力导向收敛后再缓动取景（此刻取景会框住"还没散开的初始点"）
   loop();
 }
 
@@ -666,6 +676,12 @@ function tick(){
      没有这个区分，松手就会"啪"一下停住，碰撞效果也永远看不到。 */
   const nowTs = performance.now();
   const settling = releaseAt > 0 && (nowTs - releaseAt) < SETTLE_MS;
+  /* 归位期：余波结束后，被撞开的已摆节点还要在硬回锚(HOME_K) 下走回原位。
+     只要还有节点明显偏离"家"，就继续跑（上限 1.5s 防不收敛）。 */
+  const needHome = !drag && !settling &&
+    nodes.some(n => n.pinned && !n.settleUntil && Math.hypot(n.bx - n.x, n.by - n.y) > 2);
+  if(needHome){ if(!_homeUntil) _homeUntil = nowTs + 1500; } else { _homeUntil = 0; }
+  const homing = _homeUntil > 0 && nowTs < _homeUntil;
   /* 速度积分的灵敏度系数 f2。
      历史坑：曾写成 x += vx*alpha，而 alpha 地板 0.03 → 所有力只剩 3%，
      边弹簧等于没连，拖动时邻居完全不动。
@@ -872,11 +888,16 @@ function tick(){
          余波结束 (settleUntil过)→ 把当前位置写成新锚点 bx/by，之后不再被力场移动
        这样"摆位会被记住"和"松手有惯性"就不再互相排斥。 */
   const now = performance.now();
-  const damp = settling ? RELEASE_DAMP : DAMP;
+  /* ★ 收尾阻尼：能量已耗尽、又不在拖拽/余波期时，改用强阻尼把残余运动几帧内收干净。
+     没有这一步，图会陷在"极慢地漂"的状态：残余速度从 0.46 掉到 0.085 要几秒，
+     永远压不到停表阈值 0.05 以下 —— 表现就是图永远在微抖、永远停不下来
+     （用户反馈"都没法选中节点，就一直动"），调度器也永远续排（CPU 空转）。
+     0.6/帧 约 5~8 帧内把残余速度压到阈值下，观感是"稳稳停住"而非被掐断。 */
+  const resting = !drag && !settling && !homing && alpha <= ALPHA_LIVE;
+  const damp = settling ? RELEASE_DAMP : (resting ? 0.6 : DAMP);
   // 余波期的回锚刚度更软：让松手后的惯性 & 碰撞余震先演完，弹簧再缓缓把被撞的邻居拉回原位
   const homeK = settling ? HOME_SOFT : HOME_K;
   let settledAny = false;              // 本帧是否有节点走完余波、正式锁定
-  let maxSp = 0;                       // 本帧最大速度，用于判断"是否还在动"
   for(let i=0;i<N;i++){
     const n = nodes[i];
     if(n.fixed) continue;
@@ -907,7 +928,6 @@ function tick(){
     n.x += n.vx*f2; n.y += n.vy*f2;
     n.x = Math.max(n.r, Math.min(W-n.r, n.x));
     n.y = Math.max(n.r, Math.min(H-n.r, n.y));
-    if(sp > maxSp) maxSp = sp;
   }
   // alpha 衰减到 0 = 图完全静止。
   // 拖动中衰减慢（0.05）：松手后邻居的余波要持续一会儿才停，手感才对。
@@ -918,10 +938,15 @@ function tick(){
   // ★ 余波期例外：alpha 会在余波期内衰减到 0（这是设计要的），
   //   但余波期还没演完，必须继续跑完 SETTLE_MS 才允许停表。
   //   少了这个条件，调度器会在松手 0.3 秒后就判定"静止"停表 —— 惯性演到一半被冻住。
-  // ★ 停表判据：除了能量/拖拽/余波，还要看"是否还有节点在动"。
-  //   不然被撞飞的已摆节点正在回弹、或松手节点还在滑行，调度器却因 alpha 归零而停表，
-  //   它们会被中途冻住（看起来像"啪一下卡死"）。maxSp 兜底：一切真静下来才停。
-  const alive = alpha > ALPHA_LIVE || !!drag || settling || maxSp > 0.05;
+  /* ★ 停表判据（必须与 loop() 的续排条件严格一致，否则会"半路冻住"或"永远不停"）：
+       drag     —— 手还按着
+       settling —— 松手余波还没演完（惯性滑行/碰撞余震都在这段时间里播完）
+       alpha>ALPHA_LIVE —— 还有布局能量
+     ★ 不再用 maxSp（本帧最大速度）兜底：残余速度是**渐近收敛**的，实测 3 秒后仍有
+       0.14px/帧，永远压不到阈值以下 —— 拿它当判据的结果是图永远停不下来
+       （"永远在微抖" + 调度器无限空转）。残余运动交给上面的 resting 强阻尼收尾，
+       停表时机由能量决定，是确定性的。 */
+  const alive = !!drag || settling || homing || alpha > ALPHA_LIVE;
   if(!alive){
     nodes.forEach(n=>{ n.vx = 0; n.vy = 0; });
     alpha = 0;      // 硬归零：避免残留一个极小值导致下一帧又续排
@@ -934,6 +959,8 @@ function tick(){
   // svg.moving 统管所有"持续性动效"（呼吸 / 桥接流动 / lite 起伏）。
   // 静止时整批关掉 —— 这是"静止 = 完全不动"的最后一块拼图。
   if(alive !== _wasAlive){ svg.classList.toggle("moving", alive); _wasAlive = alive; }
+  // 图刚停下来：这时才取景 —— 节点已散开到最终布局，相机缓动把整图恰好装进视野
+  if(!alive && _fitPending){ _fitPending = false; if(!dragNode) fitView(true); }
   render();
   // 调度交给外层的 loop() 决定（满帧 / 降频 / 静止停表），tick 只管力学。
   loop();
@@ -951,9 +978,16 @@ let loopHandle = null;
 //   ② 静止                     → 停表，CPU 归零。
 //      这一档是"能选中节点"的前提：图必须能真正停下来。
 // 注意：回调里必须先把句柄置空再 tick()，因为 tick() 结尾还会再调 loop() 续排。
+/* ★ 续排判据必须和 tick() 里的 alive 完全一致，否则会出现
+   "tick 认为图还在动、调度器却已经停表" 的不一致（历史最隐蔽的坑）：
+     - tick 的 alive = drag || settling || alpha>ALPHA_LIVE
+     - 旧 loop 只看   = alpha>ALPHA_LIVE || dragNode
+   结果：松手惯性滑行 / 碰撞余波演到一半，alpha 掉到阈值下就被掐断冻在半路
+   （观感就是"物理没实现"），且最后一帧 alive 仍为 true —— svg.moving 永远摘不掉，
+   "收敛后取景"也永远不触发。所以这里补上 _wasAlive（上一帧的 alive）。 */
 function loop(){
   if(loopHandle !== null) return;     // 已有排程在途，等它自己跑
-  if(alpha > ALPHA_LIVE || dragNode){
+  if(alpha > ALPHA_LIVE || dragNode || _wasAlive){
     loopHandle = requestAnimationFrame(()=>{ loopHandle = null; tick(); });
   }
 }
@@ -975,7 +1009,7 @@ function wake(level){
 // 注意不要无条件 wake()：那会在"用户只是切走了又切回来"时把静止的图重新弄动。
 document.addEventListener("visibilitychange", ()=>{
   if(document.hidden) cancelLoop();
-  else if(alpha > ALPHA_LIVE || dragNode) loop();
+  else if(alpha > ALPHA_LIVE || dragNode || _wasAlive) loop();   // 同 loop()：判据必须一致
 });
 
 function render(){
@@ -1028,6 +1062,15 @@ let dragNode = null, dragMoved = false, hoverNode = null;
 //   对照 lantern：它的图谱靠同一套 layout(tx/ty/k) 做缩放、平移、打开检查器时整图缓动重排 ——
 //   这是「图谱像活地图」的核心，我之前缺的就是这层。
 let cam = { tx:0, ty:0, k:1 }, camG = null, panning = false, panStart = null;
+/* 待适配标记：initGraph / 切轴 / 重置 后不要立刻 fit —— 那时节点还挤在初始散布点，
+   拿它去 fit 会得到"放大看一坨"的错误取景。正确做法是等力导向收敛、图真正静止的
+   那一帧再缓动取景（lantern 的 graphSettle→refit 也是这个顺序）。 */
+let _fitPending = false;
+/* 归位期截止时间。余波(settling)一结束就停表的话，被撞开的已摆节点会被冻在半路 ——
+   实测撞开 88px 只回来 19px 就定在离家 69px 处，与"pinned = 有家可回"矛盾。
+   硬回锚(HOME_K) 恰恰是在 settling 结束后才生效的，所以要再给一段归位时间。
+   带 1.5s 上限兜底：万一邻居互相顶着回不去，也不会无限跑。 */
+let _homeUntil = 0;
 function applyCam(){ if(camG) camG.setAttribute("transform",
   "translate("+cam.tx.toFixed(1)+","+cam.ty.toFixed(1)+") scale("+cam.k.toFixed(4)+")"); }
 function screenToWorld(px, py){ const r = svg.getBoundingClientRect();
@@ -1065,6 +1108,7 @@ function zoomAt(sx, sy, f){
 
 function startDrag(n){
   dragNode = n; dragMoved = false;
+  _fitPending = false;   // 用户开始拖了就别再自动取景（否则相机会在手里自己跑）
   n.fixed = true;
   // 拖动期间持续"保温"在高温（tick 里每次都会拉回），而不是只在按下瞬间加热一次：
   // 邻居要在整个拖动过程中都被带着走，一次性加热撑不过几帧。
@@ -1288,10 +1332,22 @@ document.getElementById("btn-reset").onclick = ()=>{
     g.classList.add("snap");
   });
   alpha = 1; wake();
-  fitView(true);   // 相机跟着缓动归位：整图「重排一遍」的观感
+  _fitPending = true;   // 重新散开后，等收敛完再取景（此刻取景会框住"炸开前"的旧位置）
 };
 // 轴切换逻辑已在 renderToolbar() 里按动态按钮绑定；这里不再重复绑定写死的按钮。
-window.addEventListener("resize", ()=>{ resize(); fitView(false); wake(); });
+window.addEventListener("resize", ()=>{ resize(); _fitPending = true; wake(); });
+/* iframe 从 hidden 变可见时，内层 window 的 resize 事件并不可靠 —— 直接盯住 svg 元素本身：
+   一旦拿到真实尺寸就重新给能量让布局散开，并在收敛后取景。这是"隐藏 iframe 里初始化"
+   导致节点缩成一坨的根治手段（resize 事件那条只能兜一半）。 */
+if(window.ResizeObserver){
+  let _obsW = 0, _obsH = 0;
+  new ResizeObserver(()=>{
+    if(!resize()) return;                       // 还是 0×0（仍隐藏），等下次
+    if(Math.abs(W - _obsW) < 2 && Math.abs(H - _obsH) < 2) return;
+    _obsW = W; _obsH = H;
+    _fitPending = true; wake(0.5);
+  }).observe(svg);
+}
 
 // ---- AI 缺角识别：模型基于收藏画像推「还想要哪类领域」----
 function loadAiGaps(){
