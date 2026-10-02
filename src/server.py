@@ -34,9 +34,26 @@ import analyze
 import config
 import db
 import douyin_source
-import lantern
 import topics
 import web_source
+
+# 灯笼桥接是可选增强：模块本体缺失时降级为 no-op，核心收藏 / 出卡 / 图谱照常；
+# 真 lantern.py 进入 src/ 后此处的 try 分支会优先使用真实现。
+try:
+    import lantern
+except ImportError:
+    class _LanternStub:
+        COGNITION_SOURCES = frozenset()
+        @staticmethod
+        def mark_pending(cursor, item_id):
+            pass
+        @staticmethod
+        def flush_async():
+            pass
+        @staticmethod
+        def states_map(conn, ids):
+            return {}
+    lantern = _LanternStub()
 
 # 兼容旧引用（migrate/外部脚本曾 import server.DB / server.PORT）
 ROOT = config.ROOT

@@ -74,6 +74,16 @@ TRANSCRIPT_MD_TIMEOUT = _env_int("REPO_TRANSCRIPT_MD_TIMEOUT", 60)
 # 保证「长内容也不丢篇末」，绝不从中间硬切。
 TRANSCRIPT_MD_SINGLE_MAX = _env_int("REPO_TRANSCRIPT_MD_SINGLE_MAX", 30000)
 
+# ---------- 主题归纳（topics） ----------
+# 单次归纳最多喂给模型多少条：超出取最近更新的 N 条，清单里显式说明截断，不静默丢。
+TOPICS_MAX_ITEMS = _env_int("REPO_TOPICS_MAX_ITEMS", 120)
+# 条目下限：两三条素材归纳出来的「主题」只是领域标签的同义词，不够就不调模型。
+TOPICS_MIN_ITEMS = _env_int("REPO_TOPICS_MIN_ITEMS", 4)
+# 主题 JSON 的输出预算：默认 max_tokens=600 会被硬截断，归纳要给足。
+TOPICS_MAX_TOKENS = _env_int("REPO_TOPICS_MAX_TOKENS", 2000)
+# 归纳是用户显式触发，可以比后台出卡慢，但不无限等（单次调用预算，秒）。
+TOPICS_TIMEOUT = _env_int("REPO_TOPICS_TIMEOUT", 60)
+
 # ---------- 后台采集并发 ----------
 # 同时最多多少个 worker 在跑。批量收藏/文本投递时多个 worker 会并发：
 # LLM 出卡（限流/费用）、whisper 转写（抢 CPU 内存）、SQLite 并发写。
