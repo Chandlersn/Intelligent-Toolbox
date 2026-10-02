@@ -42,10 +42,6 @@
     border:1px solid var(--accent-line); border-radius:20px; padding:1px 8px; margin-bottom:6px; }
   .empty{ font-size:12px; color:var(--muted); padding:8px 2px; }
   .note{ font-size:11px; color:var(--faint); margin-top:18px; line-height:1.6; }
-  /* 诊断行：把"当前动效档 / 系统是否要求减弱动效 / 页面加载时间"摊开写明。
-     这类"改了没变化"的问题最耗时间，页面上能自证就省一轮来回。 */
-  .note.diag{ margin-top:10px; padding-top:8px; border-top:1px dashed var(--line);
-    font-family:var(--mono); font-size:10.5px; }
   .toolbar{ position:absolute; top:12px; left:12px; display:flex; gap:8px; }
   .btn{ font-size:12px; color:var(--muted); background:var(--surface);
     border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; }
@@ -96,14 +92,15 @@
     animation: pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards,
                breathe var(--bd,5.2s) ease-in-out var(--d,0s) infinite; }
   @keyframes pop{ from{ r:0 } to{ r:var(--r) } }
-  /* 呼吸幅度取 1.14：小节点（r≈7）视觉约 1px，大节点（r≈19）约 2.6px，
-     刚好"看得出在动"又不至于像果冻。整体感来自相位错开 + 边的流动，不是每个点猛跳。 */
-  @keyframes breathe{ 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.14) } }
-  /* hover：一圈缓慢扩散的涟漪，替"这个点是有生命的" */
-  .node .halo{ fill:none; stroke:var(--accent); stroke-width:1.4; opacity:0;
+  /* 呼吸幅度取 1.18：r≈7 的小节点视觉约 1.3px，r≈19 的大节点约 3.4px。
+     周期按节点大小给（大块头更沉稳），相位按黄金角错开 —— 三个错开叠加，
+     整张图看起来是"各自在呼吸"，而不是齐刷刷地一起缩放。 */
+  @keyframes breathe{ 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.18) } }
+  /* hover：一圈持续扩散的涟漪，把注意力明确拽到这个点上 */
+  .node .halo{ fill:none; stroke:var(--accent); stroke-width:2; opacity:0;
     transform-box:fill-box; transform-origin:center; }
-  .node:hover .halo{ animation: ping 1.7s ease-out infinite; }
-  @keyframes ping{ 0%{ opacity:.5; transform:scale(.72) } 70%,100%{ opacity:0; transform:scale(1.7) } }
+  .node:hover .halo{ animation: ping 1.5s ease-out infinite; }
+  @keyframes ping{ 0%{ opacity:.75; transform:scale(.6) } 75%,100%{ opacity:0; transform:scale(2.1) } }
   /* 钉住瞬间的吸附回弹 */
   .node.snap{ animation:snap .42s cubic-bezier(.2,1.6,.35,1); }
   @keyframes snap{ 0%{transform:scale(1.14)} 55%{transform:scale(.95)} 100%{transform:scale(1)} }
@@ -120,17 +117,14 @@
   @keyframes grow{ from{ stroke-dashoffset:var(--len) } to{ stroke-dashoffset:0 } }
   @keyframes fadeIn{ from{ opacity:0 } to{ opacity:1 } }
   @keyframes flow{ to{ stroke-dashoffset:-10 } }
-  /* 节点一多（批量导入后）就降档：上百个元素各自呼吸会吃帧，宁可少一点花样也别卡 */
+  /* 节点一多（批量导入后）就降档：上百个元素各自呼吸会吃帧，宁可少一点花样也别卡。
+     这是性能保护，不是设置项 —— 页面永远在动，节点多时自动换种方式动。 */
   .lite .node .core{ animation:none; }
   .lite .node .halo{ display:none; }
-  /* 「动效：关」档（系统减弱动效时默认进这里，也可用工具栏按钮手动切）：
-     停掉持续性的呼吸与慢漂，保留入场生长和 hover 缩放 —— 一次性动作不引发不适，
-     全关的话图谱就退回成一张死图，等于把功能关了。 */
-  .still .node .core{ animation:pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards; }
-  .still .node .halo{ display:none; }
-  .still .node.snap{ animation:none; }
-  .still .edge.bridge{ animation:fadeIn .45s ease var(--d,0s) backwards; }
-  .still .node{ transition:transform .2s ease, opacity .25s ease; }
+  /* 节点多时的替代动效：整张图极缓慢地轻微起伏（一个动画顶所有节点，开销恒定）。
+     单节点呼吸的代价是 N 个无限动画，N 大了会吃帧；改成一个组动画后恒定。 */
+  .lite .node .pos{ animation:sway 9s ease-in-out infinite; }
+  @keyframes sway{ 0%,100%{ opacity:1 } 50%{ opacity:.78 } }
 </style>
 </head>
 <body data-nav="map" data-page-node-id="Sf70JOAuR1xdCYFUaI4h1Z">
@@ -144,7 +138,6 @@
     <div class="toolbar" data-page-node-id="qCdaSBNuLsdDI5v6YG6oeD">
       <span id="axisBtns" data-page-node-id="qOJlQr9TTqLuyGTqMKqtvf"></span>
       <span class="btn" id="btn-reset" data-page-node-id="gcudfyn7q8pABBaGJb3Rtn">重置视图</span>
-      <span class="btn" id="btn-motion" title="呼吸与慢漂的开关（若系统设了「减弱动效」，可在此手动开回来）" data-page-node-id="fm7Kq2pLr4xNvB8sTgWcZa">动效：开</span>
     </div>
     <svg id="svg" data-page-node-id="2sECMVmS1gg7lY92rCOUWg"></svg>
   </div>
@@ -179,7 +172,6 @@
     <div class="legend-k" data-page-node-id="KNHbJnCkfV1ErJmGWU2xAK"><span class="dot" data-page-node-id="44TdvClOePHSGBERVpAvb7"></span>认知端节点（抖音等内容）</div>
     <div class="note" data-page-node-id="Dt8DuGEiilXSdQNeLUn9Eb">生产端节点为实心圆；认知端节点外圈加虚线环。</div>
   <div class="note" data-page-node-id="P2OXaURboPipGfpaatilyI">拖动节点可手动摆位：摆过的节点会钉在原地（带细描边标记），重开页面也保持；点「重置视图」全部重新散开。</div>
-  <div class="note diag" id="diag" data-page-node-id="Di4Gn7XzQbW9rTkLpV2mHs"></div>
   </aside>
 </div>
 
@@ -439,10 +431,8 @@ function initGraph(){
     n.pinned = !!(s && s.p);
   });
   alpha = 1;
-  // 节点多就降档：上百个元素各自呼吸会吃帧，宁可少花样别卡
+  // 节点多就降档：上百个元素各自呼吸会吃帧，换成整图一个动画（开销恒定）
   svg.classList.toggle("lite", nodes.length > 90);
-  svg.classList.toggle("still", motionOff);
-  if(typeof renderDiag === "function") renderDiag();
   // 建边
   const edgeEls = edges.map((e,i)=>{
     const l = document.createElementNS(NS,"line");
@@ -473,8 +463,8 @@ function initGraph(){
     c.setAttribute("fill", colorOf(nodeGroup(n)));
     c.style.setProperty("--r", n.r);
     g.style.setProperty("--d", (i*38) + "ms");
-    // 呼吸周期：节点越大越沉稳，别让大块头跟小点一样乱颤
-    g.style.setProperty("--bd", (4.4 + n.r*0.16).toFixed(2) + "s");
+    // 呼吸周期：3.2~4.6s。慢于 4s 就开始像"没动"了，快于 2.5s 又会晃得看不清结构。
+    g.style.setProperty("--bd", (3.2 + n.r*0.075).toFixed(2) + "s");
     const t = document.createElementNS(NS,"text");
     t.setAttribute("text-anchor","middle");
     t.setAttribute("dy", n.r + 10);
@@ -517,8 +507,8 @@ function tick(){
       let d2=dx*dx+dy*dy || 0.01;
       let d=Math.sqrt(d2);
       let f=Math.min(2600/d2, 5);
-      // 悬停中的节点像有磁性：邻居被轻轻推开一点点，"点它周围会让位"
-      if((a===hoverNode || b===hoverNode) && !a.fixed && !b.fixed) f += 1.6;
+      // 悬停中的节点像有磁性：邻居被轻轻推开，"点它周围会让位"要看得出来
+      if((a===hoverNode || b===hoverNode) && !a.fixed && !b.fixed) f += 3.4;
       let fx=dx/d*f, fy=dy/d*f;
       a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
     }
@@ -561,32 +551,9 @@ function tick(){
   requestAnimationFrame(tick);
 }
 let rafOn = false, idleTimer = null, wanderT = 0;
-// 动效档位。系统「减弱动效」只降级不停用：全关等于把图谱变回死图（功能缺失）。
-// 用户可在工具栏「动效」按钮手动覆盖 —— 显式选择 > 系统偏好。
-const SYS_REDUCED = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-let motionOff = SYS_REDUCED;          // 当前是否关着持续动效
-const MOTION_KEY = "repo_map_motion";
-try { const v = localStorage.getItem(MOTION_KEY); if(v !== null) motionOff = (v === "0"); } catch(e){}
-function idleAllowed(){ return !motionOff && nodes.length <= 160; }
-function applyMotion(){
-  const b = document.getElementById("btn-motion");
-  if(b){
-    b.textContent = "动效：" + (motionOff ? "关" : "开");
-    b.classList.toggle("on", !motionOff);
-    b.title = motionOff
-      ? "当前已关：节点不呼吸、不慢漂。若是系统「减弱动效」导致的，点此手动开回来。"
-      : "节点呼吸与慢漂的开关。";
-  }
-  // 切档立刻见效：开 -> 唤醒慢漂；关 -> 停表并把位置收回基准
-  if(motionOff){
-    if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
-    rafOn = false;
-    nodes.forEach(n=>{ if(n.pinned) return; if(typeof n.bx === "number"){ n.x = n.bx; n.y = n.by; } });
-    render();
-  } else {
-    alpha = Math.max(alpha, 0.25); wake();
-  }
-}
+// 慢漂只是性能档位，不是设置项：节点太多（批量导入后）时关掉，
+// 否则每帧要做 N² 斥力。正常规模永远开着。
+function idleAllowed(){ return nodes.length <= 160; }
 function wake(){
   if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
   if(rafOn) return;
@@ -607,10 +574,11 @@ function idleTick(){
     // 钉住的节点不参与游走：用户摆好的位是"意图"，别去动它。
     // 但视觉上仍随外层呼吸缩放（那是 CSS，不改坐标），所以不会显得完全僵死。
     if(n.pinned) return;
-    // 频率略有差异，避免整张图同相位摆动（那看起来像整体在平移而不是各自呼吸）
+    // 频率与相位都错开，避免整张图同相位摆动（那看起来像整体在平移而不是各自呼吸）。
+    // 周期约 9~13s、幅度 ±7px：慢到不干扰读图，快到盯住任一点能看出它在动。
     const ph = n.ph || 0;
-    const ax = Math.cos(wanderT*0.00042 + ph) * 4.5;
-    const ay = Math.sin(wanderT*0.00031 + ph*1.7) * 4.5;
+    const ax = Math.cos(wanderT*0.00058 + ph) * 7;
+    const ay = Math.sin(wanderT*0.00044 + ph*1.7) * 7;
     n.x = Math.max(n.r, Math.min(W-n.r, n.bx + ax));
     n.y = Math.max(n.r, Math.min(H-n.r, n.by + ay));
   });
@@ -770,26 +738,6 @@ document.getElementById("btn-reset").onclick = ()=>{
 };
 // 轴切换逻辑已在 renderToolbar() 里按动态按钮绑定；这里不再重复绑定写死的按钮。
 window.addEventListener("resize", ()=>{ resize(); wake(); });
-
-// 动效开关：显式选择压过系统偏好。切档立刻生效，不用刷新。
-document.getElementById("btn-motion").onclick = function(){
-  motionOff = !motionOff;
-  try { localStorage.setItem(MOTION_KEY, motionOff ? "0" : "1"); } catch(e){}
-  svg.classList.toggle("still", motionOff);
-  applyMotion();
-  renderDiag();
-};
-function renderDiag(){
-  const el = document.getElementById("diag");
-  if(!el) return;
-  const lite = svg.classList.contains("lite");
-  el.textContent = "动效 " + (motionOff ? "关" : "开")
-    + (SYS_REDUCED ? "（系统要求减弱动效）" : "")
-    + (lite ? " · 已降档（节点多）" : "")
-    + " · 页面载入 " + new Date().toLocaleTimeString("zh-CN");
-}
-applyMotion();
-renderDiag();
 
 // ---- AI 缺角识别：模型基于收藏画像推「还想要哪类领域」----
 function loadAiGaps(){
