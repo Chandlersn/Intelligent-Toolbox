@@ -108,20 +108,25 @@
   .node.near circle{ stroke-opacity:.55; }
   .node:hover{ transform:scale(1.22); }
   .edge.hot{ stroke-width:2.4; opacity:.95; }
-  /* 入场：半径从 0 弹出；随后极轻地持续呼吸（周期越大的节点越慢），整张图像在缓慢起伏 */
+  /* 入场：半径从 0 弹出。随后是否持续"呼吸"，取决于图有没有能量 ——
+     见下方 svg.moving。静止的图不该一直起伏（用户原话："我都没法选中节点，就一直动"），
+     呼吸只在你拖动/余波期间出现，停下来就彻底不动。 */
   .node .core{ transform-box:fill-box; transform-origin:center;
-    animation: pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards,
+    animation: pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards; }
+  svg.moving .node .core{ animation:
+               pop .5s cubic-bezier(.2,1.45,.4,1) var(--d,0s) backwards,
                breathe var(--bd,5.2s) ease-in-out var(--d,0s) infinite; }
   @keyframes pop{ from{ r:0 } to{ r:var(--r) } }
-  /* 呼吸幅度取 1.18：r≈7 的小节点视觉约 1.3px，r≈19 的大节点约 3.4px。
+  /* 呼吸幅度 1.18：r≈7 的小节点视觉约 1.3px，r≈19 的大节点约 3.4px。
      周期按节点大小给（大块头更沉稳），相位按黄金角错开 —— 三个错开叠加，
      整张图看起来是"各自在呼吸"，而不是齐刷刷地一起缩放。 */
   @keyframes breathe{ 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.18) } }
-  /* hover：一圈持续扩散的涟漪，把注意力明确拽到这个点上 */
+  /* hover：一圈扩散的涟漪，把注意力明确拽到这个点上。
+     是一次性播放而非无限循环 —— 悬停是"看"，看的时候不该有东西一直闪。 */
   .node .halo{ fill:none; stroke:var(--accent); stroke-width:2; opacity:0;
     transform-box:fill-box; transform-origin:center; }
-  .node:hover .halo{ animation: ping 1.5s ease-out infinite; }
-  @keyframes ping{ 0%{ opacity:.75; transform:scale(.6) } 75%,100%{ opacity:0; transform:scale(2.1) } }
+  .node:hover .halo{ animation: ping 1.1s ease-out; }
+  @keyframes ping{ 0%{ opacity:.7; transform:scale(.6) } 70%,100%{ opacity:0; transform:scale(2.1) } }
   /* 钉住瞬间的吸附回弹 */
   .node.snap{ animation:snap .42s cubic-bezier(.2,1.6,.35,1); }
   @keyframes snap{ 0%{transform:scale(1.14)} 55%{transform:scale(.95)} 100%{transform:scale(1)} }
@@ -148,16 +153,20 @@
   .edge.grow{ animation:grow .8s cubic-bezier(.2,.72,.3,1) var(--d,0s) backwards,
                     fadeIn .4s linear var(--d,0s) backwards;
               stroke-dasharray:1; stroke-dashoffset:0; }
-  .edge.bridge{ animation:fadeIn .5s ease var(--d,0s) backwards,
-                        flow 1.6s linear .5s infinite; }
+  .edge.bridge{ animation:fadeIn .5s ease var(--d,0s) backwards; }
+  /* 流动也只在图有能量时出现：静止的图上线条一直爬会显得图"不安静"，
+     而看图的人要的是能盯住某个节点。 */
+  svg.moving .edge.bridge{ animation:fadeIn .5s ease var(--d,0s) backwards,
+                                  flow 1.6s linear .5s infinite; }
   @keyframes grow{ from{ stroke-dashoffset:1 } to{ stroke-dashoffset:0 } }
   @keyframes fadeIn{ from{ opacity:0 } to{ opacity:1 } }
   @keyframes flow{ to{ stroke-dashoffset:-10 } }
   /* 节点一多（批量导入后）就降档：上百个元素各自呼吸会吃帧，宁可少一点花样也别卡。
-     这是性能保护，不是设置项 —— 页面永远在动，节点多时自动换种方式动。
+     这是性能保护，不是设置项。
      注意不能 display:none 掉 halo —— 那是碰撞脉冲的唯一载体，
      砍掉它等于"节点多的时候碰撞就没有反馈了"，降级降到了功能上。 */
   .lite .node .core{ animation:none; }
+  svg.moving.lite .node .core{ animation:none; }   /* lite 档本就不做单节点呼吸 */
   .lite .node .halo{ display:none; }
   .lite .node.dragging .core{ animation:dragPulse .9s ease-in-out infinite; }
   .lite .node.dragging .halo{ display:block; opacity:.55; animation:none; }
@@ -165,8 +174,8 @@
      而没有它碰撞就完全不可见 —— 这属于"砍花样"而不是"砍功能"。 */
   .lite .node.ping .halo{ display:block; animation:ping .42s ease-out; }
   /* 节点多时的替代动效：整张图极缓慢地轻微起伏（一个动画顶所有节点，开销恒定）。
-     单节点呼吸的代价是 N 个无限动画，N 大了会吃帧；改成一个组动画后恒定。 */
-  .lite .node .pos{ animation:sway 9s ease-in-out infinite; }
+     同样只在 svg.moving 期间生效 —— 静止的图就该彻底静止。 */
+  svg.moving.lite .node .pos{ animation:sway 9s ease-in-out infinite; }
   @keyframes sway{ 0%,100%{ opacity:1 } 50%{ opacity:.78 } }
 </style>
 </head>
@@ -289,9 +298,17 @@ const svg = document.getElementById("svg");
 const tip = document.getElementById("tip");
 const NS = "http://www.w3.org/2000/svg";
 let nodes = [], edges = [], byId = {}, W = 0, H = 0, alpha = 1, selId = null;
-// 力场的"环境下限"：alpha 向它衰减而不是归零，图永远不冻结。
-// 0.03 对应 d3 生态常用的 alphaTarget 0.02~0.05 区间（"微妙有生命感"档）。
-const ALPHA_FLOOR = 0.03;
+// _wasAlive 记住上一帧的"活/静"，只在翻转时才动 svg 的 class（避免每帧写 DOM）
+let _wasAlive = true;
+/* 力场能量。
+   重要：这里让 alpha 能真正归零（图会完全静止），而不是设一个"永不下限"。
+   之前的 ALPHA_FLOOR=0.03 + 持续噪声力 = 图永远在微微漂移，结果是
+   鼠标停不到某个节点上、节点点不准（用户原话："我都没法选中节点，就一直动"）。
+   正确的产品形态是：**静止 = 可读可点，动 = 只在你主动拖拽时发生。**
+   "活着"不等于"永远在动"——悬浮感来自 hover 的邻接聚焦与光晕，不来自持续漂移。 */
+const ALPHA_FLOOR = 0;      // 能量地板：允许完全静止
+const ALPHA_LIVE  = 0.06;   // 低于此值视为静止，停止施加噪声并让调度器停表
+const ALPHA_DRAG  = 0.5;    // 拖动时的工作能量
 
 // ---- 物理常量（集中一处，便于按手感调）----
 const LINK_REST   = 108;   // 边的理想长度（弹簧平衡位置）
@@ -564,8 +581,10 @@ function initGraph(){
   });
   window.__edgeEls = edgeEls;
   window.__nodeEls = nodeEls;
-  // 新图就位：从头跑一轮完整布局，之后自然衰减到环境档（不会空转）
+  // 新图就位：从头跑一轮完整布局，之后自然衰减到静止（alpha→0 后彻底停表）
   alpha = 1;
+  _wasAlive = false;   // 强制下一帧重设 moving 类
+  svg.classList.add("moving");
   loop();
 }
 
@@ -580,18 +599,16 @@ function neighbors(id){
 
 function tick(){
   const N = nodes.length;
-  // 拖拽中被拖节点的热度衰减得快些：拖动要给邻居让位的能量，
-  // 但松手后不该让整张图一直晃。0.55 → 约 20 帧内回落到环境档。
   const drag = dragNode;
-  /* 速度积分的灵敏度系数 f2 —— 这里是全篇最容易写错的一处：
-     一开始我写成 x += vx*alpha（alpha 地板 0.03 → 所有力只剩 3%，拖动时邻居完全不动）；
-     改成 alpha² 更是雪上加霜（0.03² = 0.0009，稳定态直接冻结）。
-     正确做法是把「布局收敛进度」和「物理灵敏度」解耦：
-       f2 = SENS_MIN + alpha*(1-SENS_MIN)
-     稳定态（alpha=0.03）仍有 SENS_MIN 的灵敏度 → 碰撞、惯性、牵引都还在；
-     布局期（alpha→1）接近满速，收敛快。SENS_MIN 不能低于 0.2，
-     否则一稳定整张图就变成静物。 */
-  const f2 = drag ? 1 : (SENS_MIN + alpha * (1 - SENS_MIN));
+  /* 速度积分的灵敏度系数 f2。
+     历史坑：曾写成 x += vx*alpha，而 alpha 地板 0.03 → 所有力只剩 3%，
+     边弹簧等于没连，拖动时邻居完全不动。
+     现在 alpha 地板改成 0（图要能完全静止），所以 f2 不能只跟 alpha 走：
+       拖拽中     → 1（手感必须直接）
+       有余波时   → SENS_MIN + alpha*(1-SENS_MIN)，保证低能量下仍能滑行
+       彻底静止   → 0（配合下面"能量耗尽即清零速度"，真正停干净）
+     SENS_MIN 取 0.3：低于 0.2 会让松手后的惯性像被吸住，滑不动。 */
+  const f2 = drag ? 1 : (alpha > 0 ? (SENS_MIN + alpha * (1 - SENS_MIN)) : 0);
 
   /* ---------- 1. 成对力：斥力 + 弹性碰撞（同一趟循环，O(N²) 只走一次） ---------- */
   for(let i=0;i<N;i++){
@@ -607,8 +624,10 @@ function tick(){
 
       // 斥力（软性，近距离封顶，避免糊成一团时的数值爆炸）
       let f = Math.min(REPEL_K/d2, REPEL_CAP);
-      // 悬停/拖拽中的节点像有磁性：邻居被轻轻推开，"点它周围会让位"要看得出来
-      if(a===hoverNode || b===hoverNode || a===drag || b===drag) f += 3.2;
+      // 磁性让位只给"正在拖拽"的节点，不给 hover。
+      // 用户明确要求：hover 时不要动。悬停是"看"不是"碰"——
+      // 一碰就推开会让鼠标永远停不到某个节点上，既点不准也读不懂。
+      if(a===drag || b===drag) f += 3.2;
       a.vx += nx*f; a.vy += ny*f;
       b.vx -= nx*f; b.vy -= ny*f;
 
@@ -691,10 +710,11 @@ function tick(){
     n.vy += (H/2 - n.y)*CENTER_K;
   });
 
-  // 环境噪声力：d3 生态的标准做法（alphaTarget + 每帧随机扰动）。
-  // 关键在"随机"——规则的正弦摆动看着像钟摆，随机扰动才像水里的浮尘。
-  // 幅度极小（±0.09），视觉上只是持续微微挪动，不会打乱已收敛的布局。
-  if(alpha > ALPHA_FLOOR*0.9){
+  /* 环境噪声力：给整张图一层极微的随机扰动。
+     只在「有能量」时施加：刚布局完、拖动中、松手后的余波期。
+     彻底静止后不加 —— 否则图永远在微微漂，鼠标根本停不住某个节点，
+     节点也点不准（用户反馈"都没法选中节点，就一直动"）。 */
+  if(alpha > ALPHA_LIVE){
     for(let i=0;i<N;i++){
       const n = nodes[i];
       if(n.fixed || n.pinned) continue;
@@ -704,10 +724,10 @@ function tick(){
   }
 
   /* ---------- 4. 积分 ----------
-     关键改动：x += vx*f2，f2 有下限（见上），而不是 x += vx*alpha。
-     那样写等于把所有力（边弹簧、碰撞冲量）都按 alpha 打折 ——
-     alpha 地板是 0.03，3% 的牵引力等于"没有连线"，
-     这正是"拖动时邻居一动不动"的根因。 */
+     f2 = 拖拽中用满速；否则用 alpha，但带一个下限 SENS_MIN。
+     为什么要下限：alpha 会归零（这是"能静止"的前提），
+     但如果直接 x += vx*alpha，alpha→0 时碰撞余波和松手惯性会被瞬间抹平，
+     节点看起来像被"吸住"而不是"停下"。SENS_MIN 让低能量下的运动保持可感。 */
   for(let i=0;i<N;i++){
     const n = nodes[i];
     if(n.fixed || n.pinned) continue;
@@ -719,52 +739,62 @@ function tick(){
     n.x = Math.max(n.r, Math.min(W-n.r, n.x));
     n.y = Math.max(n.r, Math.min(H-n.r, n.y));
   }
-  // alpha 向"环境下限"衰减而不是归零：力场一直有微弱能量，图永远不冻结。
-  // 这是 d3 alphaTarget 的等价物，也是主流图谱"永远活着"的根本原因。
-  alpha += (ALPHA_FLOOR - alpha) * (drag ? 0.04 : 0.02);
+  // alpha 衰减到 0 = 图完全静止。
+  // 拖动时衰减慢（0.06）：松手后邻居的余波要持续一会儿才停，手感才对。
+  // 平时衰减快（0.09）：约 45 帧（0.75 秒）内停下 —— 再慢就会让人觉得"还在动"。
+  alpha += (ALPHA_FLOOR - alpha) * (drag ? 0.06 : 0.09);
+  // 能量耗尽时把速度也清零：否则节点会以极小速度一直"贴着地板爬"，
+  // 看起来还是没停干净（alpha 归零但 vx 不为 0 的经典坑）。
+  const alive = alpha > ALPHA_LIVE || !!drag;
+  if(!alive){
+    nodes.forEach(n=>{ n.vx = 0; n.vy = 0; });
+    alpha = 0;      // 硬归零：避免残留一个极小值导致下一帧又续排
+  }
+  // svg.moving 统管所有"持续性动效"（呼吸 / 桥接流动 / lite 起伏）。
+  // 静止时整批关掉 —— 这是"静止 = 完全不动"的最后一块拼图。
+  if(alive !== _wasAlive){ svg.classList.toggle("moving", alive); _wasAlive = alive; }
   render();
-  // 调度交给外层的 loop() 决定（满帧 / 20fps 降频），tick 只管力学。
+  // 调度交给外层的 loop() 决定（满帧 / 降频 / 静止停表），tick 只管力学。
   loop();
 }
-/* 调度器只有一个真相来源：loopHandle（当前排程句柄）+ loopMode（它是 rAF 还是 timeout）。
-   之前的写法是「loopScheduled 标志位」+「idleTimer」两个各自独立的状态，
-   于是一旦在定时器还没到点时把它 clearTimeout 掉，标志位仍然是 true，
-   之后所有 loop() 都直接 return —— 循环永久死锁，图彻底静止，拖拽自然也没反应。
-   现在「有没有排程」直接由句柄是否存在决定，不可能对不上。 */
-let loopHandle = null, loopMode = null;
-function idleAllowed(){ return nodes.length <= 160; }
-// 统一调度口：交互中（能量高 / 拖拽中）走满帧，稳定后降到 ~20fps。
-// forceCollide + 斥力是 O(N²)，满帧每帧都算太烧 CPU；但降频只是少渲染，
-// 力学一步没少，所以图照样是"活着"的。
+/* 调度器只有一个真相来源：loopHandle（当前待执行的 rAF 句柄）。
+   历史两次踩坑，都源于"用两个独立状态描述同一件事"：
+     ① 「loopScheduled 标志位」+「idleTimer 定时器」→ clearTimeout 后标志还挂着，
+        loop() 永远命中防重入直接 return，循环死锁、图静止、拖不动。
+     ② 「低频保活档」→ 图静止后仍以 30~50ms 一次的速度永远续排，
+        节点以不可见速度一直爬，鼠标停不住、点不准。
+   现在只有两种状态：有句柄（在途）/ 没句柄（静止停表）。不可能对不上。 */
+let loopHandle = null;
+// 统一调度口，两档：
+//   ① 有能量（拖动中 / 余波期）→ 满帧 rAF
+//   ② 静止                     → 停表，CPU 归零。
+//      这一档是"能选中节点"的前提：图必须能真正停下来。
 // 注意：回调里必须先把句柄置空再 tick()，因为 tick() 结尾还会再调 loop() 续排。
 function loop(){
   if(loopHandle !== null) return;     // 已有排程在途，等它自己跑
-  if(alpha > 0.05 || dragNode){
-    loopMode = "raf";
-    loopHandle = requestAnimationFrame(()=>{ loopHandle = null; loopMode = null; tick(); });
-  } else if(idleAllowed()){
-    loopMode = "timeout";
-    loopHandle = setTimeout(()=>{ loopHandle = null; loopMode = null; tick(); }, 50);
+  if(alpha > ALPHA_LIVE || dragNode){
+    loopHandle = requestAnimationFrame(()=>{ loopHandle = null; tick(); });
   }
-  // 否则（节点太多且无交互）：彻底停表，不设句柄，别空烧
 }
-// 撤销待执行的排程。取消和"是否有排程"必须由同一个状态驱动，
-// 否则就会出现「定时器被清掉了但标志还挂着」的死锁。
 function cancelLoop(){
   if(loopHandle === null) return;
-  if(loopMode === "raf") cancelAnimationFrame(loopHandle);
-  else clearTimeout(loopHandle);
-  loopHandle = null; loopMode = null;
+  cancelAnimationFrame(loopHandle);
+  loopHandle = null;
 }
-function wake(){
+/* 唤醒。level 指定唤醒到多少能量：
+   - ALPHA_DRAG（拖动）：给足能量，邻居要明确跟着走
+   - 默认（切轴/重置/回到页面）：中等能量，够把布局收敛完
+   注意：hover **不再调用 wake()** —— 悬停只是看，不该让图动。 */
+function wake(level){
   cancelLoop();
-  alpha = Math.max(alpha, 0.28);      // 交互时把能量拉起来，松手后衰减回环境档
+  alpha = Math.max(alpha, level || 0.28);
   loop();
 }
-// 页面藏起来（切标签/最小化）就别空转，回来时再唤醒
+// 页面藏起来（切标签/最小化）就别空转；回来时若图还没静止才继续。
+// 注意不要无条件 wake()：那会在"用户只是切走了又切回来"时把静止的图重新弄动。
 document.addEventListener("visibilitychange", ()=>{
   if(document.hidden) cancelLoop();
-  else wake();
+  else if(alpha > ALPHA_LIVE || dragNode) loop();
 });
 
 function render(){
@@ -819,13 +849,14 @@ function startDrag(n){
   n.fixed = true;
   // 拖动期间持续"保温"在高温（tick 里每次都会拉回），而不是只在按下瞬间加热一次：
   // 邻居要在整个拖动过程中都被带着走，一次性加热撑不过几帧。
-  alpha = Math.max(alpha, 0.5);
+  // 这是唯一会让图动起来的交互 —— hover 只做视觉，一根手指都不碰物理。
+  alpha = Math.max(alpha, ALPHA_DRAG);
   // 被拖的节点放大 + 全图压暗：拖动时"谁被我抓着"要一眼看出来
   const el = (window.__nodeEls || []).find(o => o.n === n);
   if(el) el.g.classList.add("dragging");
   svg.classList.add("dragging");
   applyHighlight();
-  wake();
+  wake(ALPHA_DRAG);
 }
 function dragMove(cx, cy){
   if(!dragNode) return;
@@ -873,7 +904,9 @@ function dragEnd(){
   window.__nodeEls.forEach(({g})=>g.classList.remove("dragging"));
   svg.classList.remove("dragging");
   applyHighlight();
-  wake();   // 放手后把能量拉回来，让邻居重新让位、图继续活着
+  // 松手后给一点余波能量，让惯性滑行和碰撞余震播完（约 1 秒）再停。
+  // 这里不能 wake() 到高能量：余波只是"停下来之前的那一下"，不是"继续动"。
+  if(dragMoved) wake(0.18);
 }
 
 function bindNode(g, n){
@@ -888,9 +921,13 @@ function bindNode(g, n){
   g.addEventListener("pointerenter", e=>{
     if(dragNode) return;              // 拖拽中不换 hover 对象，否则高亮乱跳
     hoverNode = n;
-    // 悬停时把周围节点轻轻唤醒让位（低频即可，视觉上"点一下会推开邻居"）
-    wake();
-    applyHighlight();     // 邻接聚焦：邻居留亮、其余压暗 —— 悬浮感的主要来源
+    /* hover 只做视觉，绝不碰物理：不调 wake()、不加斥力。
+       用户原话「hover的时候，不要动，拖动才动」。
+       悬停是"看"——鼠标停到某个节点上时，那个节点必须是稳的，
+       否则永远停不住、点不准，悬浮感也读不出来。
+       邻接聚焦（邻居留亮 / 其余压暗 / 连边点亮）已经是纯 CSS 类切换，
+       零物理开销，照样给足"悬浮感"。 */
+    applyHighlight();
     showTip(n, e);
   });
   g.addEventListener("pointermove", e=>{ if(!dragNode) moveTip(e); });
