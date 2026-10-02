@@ -60,6 +60,24 @@
     border:none; background:transparent; padding:8px 10px}
   .more .menu .abtn:hover{background:var(--surface-2)}
   .more .menu .abtn.del{color:var(--err)}
+
+  /* ===== 主题化对话框：替代浏览器原生 confirm/alert ===== */
+  .dlg-mask{position:fixed; inset:0; z-index:90; background:var(--overlay);
+    display:flex; align-items:center; justify-content:center; padding:20px;
+    animation:dlg-in .16s var(--ease)}
+  .dlg{width:100%; max-width:340px; background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--r-lg); box-shadow:0 14px 38px rgba(35,32,27,.22); padding:18px 18px 14px}
+  .dlg h3{margin:0 0 8px; font-size:15px; color:var(--ink)}
+  .dlg p{margin:0 0 16px; font-size:13px; line-height:1.6; color:var(--muted)}
+  .dlg .dlg-acts{display:flex; gap:8px; justify-content:flex-end}
+  .dlg .dlg-btn{font:600 13px/1 var(--sans); border-radius:var(--r); padding:10px 16px; cursor:pointer;
+    border:1px solid var(--line); background:var(--surface-2); color:var(--ink); transition:all .15s var(--ease)}
+  .dlg .dlg-btn:hover{border-color:var(--faint); background:var(--line-soft)}
+  .dlg .dlg-btn.danger{border:none; background:var(--err); color:var(--on-ink)}
+  .dlg .dlg-btn.danger:hover{background:#a03e28}
+  @keyframes dlg-in{from{opacity:0}to{opacity:1}}
+  .dlg-mask .dlg{animation:dlg-pop .18s var(--ease)}
+  @keyframes dlg-pop{from{opacity:0; transform:scale(.94) translateY(6px)}to{opacity:1; transform:none}}
   .more .menu .abtn.del:hover{background:rgba(180,71,47,.08)}
 
   /* ===== 新筛选区：搜索+排序一行，三组胶囊云 ===== */
@@ -742,19 +760,55 @@ function maybeFocus(){
 
 // 备注：保留反馈相关 API 以兼容画像页的「你的反馈」统计；卡片页不再设置反馈
 
+// 主题化对话框：danger=true 时确认键为红色；cancelText 传 null 则只有确认键（替代 alert）
+function showDlg(opt){
+  return new Promise(function(resolve){
+    var mask=document.createElement('div'); mask.className='dlg-mask';
+    var box=document.createElement('div'); box.className='dlg';
+    var h=document.createElement('h3'); h.textContent=opt.title||'提示'; box.appendChild(h);
+    if(opt.text){ var p=document.createElement('p'); p.textContent=opt.text; box.appendChild(p); }
+    var acts=document.createElement('div'); acts.className='dlg-acts';
+    function close(v){ mask.remove(); resolve(v); }
+    if(opt.cancelText){
+      var c=document.createElement('button'); c.className='dlg-btn'; c.textContent=opt.cancelText;
+      c.onclick=function(){ close(false); }; acts.appendChild(c);
+    }
+    var ok=document.createElement('button'); ok.className='dlg-btn'+(opt.danger?' danger':'');
+    ok.textContent=opt.okText||'确定'; ok.onclick=function(){ close(true); }; acts.appendChild(ok);
+    box.appendChild(acts); mask.appendChild(box); document.body.appendChild(mask);
+    mask.addEventListener('click', function(e){ if(e.target===mask) close(false); });
+    document.addEventListener('keydown', function esc(e){
+      if(e.key==='Escape'){ document.removeEventListener('keydown', esc); close(false); }
+    });
+    ok.focus();
+  });
+}
+
 function onDelete(btn, id){
-  if(!confirm('确定删除这条收藏？关联的图谱、画像数据会同步清除，且不可恢复。')) return;
-  btn.disabled=true; btn.textContent='删除中…';
-  fetch('/api/item/'+id,{method:'DELETE'}).then(function(r){return r.json()}).then(function(d){
-    if(d.ok){ load(); } else { alert('删除失败：'+(d.error||'')); btn.disabled=false; btn.textContent='删除'; }
-  }).catch(function(){ alert('删除失败，确认服务在运行'); btn.disabled=false; btn.textContent='删除'; });
+  showDlg({
+    title:'删除这条收藏？',
+    text:'关联的图谱、画像数据会同步清除，且不可恢复。',
+    okText:'删除', cancelText:'取消', danger:true
+  }).then(function(go){
+    if(!go) return;
+    btn.disabled=true; btn.textContent='删除中…';
+    fetch('/api/item/'+id,{method:'DELETE'}).then(function(r){return r.json()}).then(function(d){
+      if(d.ok){ load(); } else {
+        showDlg({title:'删除失败', text:d.error||'未知错误', okText:'知道了'});
+        btn.disabled=false; btn.textContent='删除';
+      }
+    }).catch(function(){
+      showDlg({title:'删除失败', text:'确认服务在运行', okText:'知道了'});
+      btn.disabled=false; btn.textContent='删除';
+    });
+  });
 }
 
 function onShare(id){
   // 取最新卡片数据拼可分享文本
   fetch('/api/items').then(function(r){return r.json()}).then(function(d){
     var it=(d.items||[]).filter(function(x){return String(x.id)===String(id)})[0];
-    if(!it){ alert('未找到该收藏'); return; }
+    if(!it){ showDlg({title:'未找到该收藏', text:'列表可能刚刷新过，请重试', okText:'知道了'}); return; }
     var c=it.card||{}, meta=it.meta||{};
     var name=meta.name||it.url;
     var isCog=(it.kind==='cognition');
@@ -780,18 +834,28 @@ function onShare(id){
     linkBtn.onclick=function(){ ta.value=link; ta.select(); doCopy(link,'深链已复制'); };
     document.getElementById('closeShare').onclick=function(){ mask.hidden=true; };
     mask.onclick=function(e){ if(e.target===mask) mask.hidden=true; };
-  }).catch(function(){ alert('加载失败'); });
+  }).catch(function(){ showDlg({title:'加载失败', text:'确认服务在运行', okText:'知道了'}); });
+}
+
+// 主题 toast：走 theme.css 的 .toast 类（墨色半透明+白字），成功类轻提示用
+var _toastEl=null, _toastTimer=null;
+function toast(msg){
+  if(!_toastEl){ _toastEl=document.createElement('div'); _toastEl.className='toast'; document.body.appendChild(_toastEl); }
+  _toastEl.textContent=msg;
+  requestAnimationFrame(function(){ _toastEl.classList.add('show'); });
+  clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(function(){ _toastEl.classList.remove('show'); }, 1600);
 }
 
 function doCopy(text, okMsg){
-  var done=function(){ alert(okMsg); };
+  var done=function(){ toast(okMsg); };
   if(navigator.clipboard&&navigator.clipboard.writeText){
     navigator.clipboard.writeText(text).then(done).catch(function(){ fallbackCopy(text,okMsg); });
   } else { fallbackCopy(text,okMsg); }
 }
 function fallbackCopy(text, okMsg){
   var ta=document.getElementById('shareText'); ta.value=text; ta.select();
-  try{ document.execCommand('copy'); alert(okMsg); }catch(e){ alert('复制失败，请手动选择文本复制'); }
+  try{ document.execCommand('copy'); toast(okMsg); }catch(e){ showDlg({title:'复制失败', text:'请手动选择文本复制', okText:'知道了'}); }
 }
 
 function clearAll(){

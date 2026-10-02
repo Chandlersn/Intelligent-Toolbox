@@ -1020,6 +1020,11 @@ def fetch_github_meta(path):
     try:
         req = urllib.request.Request(api, headers=_github_headers())
         with urllib.request.urlopen(req, timeout=8) as r:
+            # 回写限额状态（doctor 展示用），token 生效后这里会跳到 ~5000
+            rem = r.headers.get("X-RateLimit-Remaining")
+            if rem is not None:
+                _RATE_STATE["remaining"] = rem
+                _RATE_STATE["limited"] = False
             data = json.loads(r.read().decode("utf-8"))
         return {
             "name": data.get("full_name"),
