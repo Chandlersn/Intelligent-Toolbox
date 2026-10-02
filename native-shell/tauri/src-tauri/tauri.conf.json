@@ -4,12 +4,13 @@
   "version": "0.1.0",
   "identifier": "com.repocollector.float",
   "build": {
-    "beforeDevCommand": "python3 -m http.server 4321 --directory ../src",
+    "beforeDevCommand": "python -m http.server 4321 --directory ../src",
     "devUrl": "http://localhost:4321",
     "beforeBuildCommand": "",
     "frontendDist": "../src"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
@@ -37,14 +38,6 @@
   },
   "bundle": {
     "active": false,
-    "targets": "all",
-    "macOS": {
-      "associatedSchemes": ["repocollector"]
-    },
-    "windows": {
-      "protocol": {
-        "schemes": ["repocollector"]
-      }
-    }
+    "targets": "all"
   }
 }

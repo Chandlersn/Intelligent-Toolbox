@@ -10,12 +10,19 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-deep-link = { version = "2", features = ["protocol"] }
+tauri-plugin-deep-link = { version = "2", features = [] }
 reqwest = { version = "0.12", features = ["blocking", "json"], default-features = false }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 panic = "abort"
 opt-level = "s"
 lto = true
 strip = true
+
+# 上游 bug 补丁：schemars 0.8.22 的 preserve_order 特性绑 indexmap 1.x，
+# 而其 Map<K, V> 别名漏了 indexmap 1.x 必需的第三个泛型参数（E0107）。
+# vendor/ 里的拷贝补上了默认参数；上游发布修复后删掉本段即可。
+[patch.crates-io]
+schemars = { path = "../vendor/schemars-0.8.22" }

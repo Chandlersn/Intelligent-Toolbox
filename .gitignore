@@ -25,3 +25,6 @@ media/**
 models/
 # 服务运行日志
 server.log
+# Tauri 构建产物与生成物（cargo build 产物、build 脚本生成的 schema）
+native-shell/tauri/src-tauri/target/
+native-shell/tauri/src-tauri/gen/
