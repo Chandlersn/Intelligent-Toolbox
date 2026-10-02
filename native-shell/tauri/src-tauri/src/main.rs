@@ -84,6 +84,26 @@ fn forward_to_collector(raw: &str) {
     });
 }
 
+/// 极简文件日志（秒级时间戳）：壳是无控制台程序，自退时无处可看原因，
+/// 关键生命周期事件落盘到 %LOCALAPPDATA%/repo-collector-shell/shell.log。
+fn slog(msg: &str) {
+    use std::io::Write;
+    let base = match std::env::var_os("LOCALAPPDATA") {
+        Some(b) => b,
+        None => return,
+    };
+    let p = std::path::Path::new(&base)
+        .join("repo-collector-shell")
+        .join("shell.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
+}
+
 fn main() {
     // 固定 WebView2 用户数据目录（在 Tauri 初始化前设置）：
     // 1) 不依赖启动方式（双击 / 发送到 / 深链），档案位置恒定；
@@ -104,6 +124,8 @@ fn main() {
             forward_to_collector(&arg);
         }
     }
+
+    slog("shell starting");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
@@ -128,8 +150,27 @@ fn main() {
                     }
                 }
             });
+            slog("setup done");
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| match event {
+            tauri::RunEvent::ExitRequested { code, .. } => {
+                slog(&format!("exit requested, code={code:?}"));
+            }
+            tauri::RunEvent::Exit => {
+                slog("exit");
+            }
+            tauri::RunEvent::WindowEvent { label, event, .. } => match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    slog(&format!("window close requested: {label}"));
+                }
+                tauri::WindowEvent::Destroyed => {
+                    slog(&format!("window destroyed: {label}"));
+                }
+                _ => {}
+            },
+            _ => {}
+        });
 }
