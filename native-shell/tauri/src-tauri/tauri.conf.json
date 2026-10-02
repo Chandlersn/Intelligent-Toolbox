@@ -4,8 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.repocollector.float",
   "build": {
-    "beforeDevCommand": "python -m http.server 4321 --directory ../src",
-    "devUrl": "http://localhost:4321",
+    "beforeDevCommand": "",
     "beforeBuildCommand": "",
     "frontendDist": "../src"
   },
@@ -15,6 +14,7 @@
       {
         "label": "main",
         "title": "收藏箱",
+        "url": "http://127.0.0.1:8732/ball.html",
         "width": 280,
         "height": 360,
         "decorations": false,
