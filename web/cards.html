@@ -197,6 +197,8 @@
   .toc-list a:hover{ background:var(--surface-2); color:var(--accent) }
   .toc-list a.cur{ color:var(--accent); background:var(--accent-dim);
     border-left-color:var(--accent) }
+  .search-hit{ font-size:12.5px; line-height:1.55; color:var(--muted); background:var(--surface-2); border-left:2px solid var(--accent); padding:7px 10px; margin:7px 0; white-space:pre-wrap; overflow-wrap:anywhere }
+  .search-hit-label{ font-size:11px; color:var(--faint); margin-bottom:2px }
 </style>
 </head>
 <body data-nav="cards">
@@ -208,7 +210,7 @@
 </header>
 <div class="fbar">
   <div class="ftop">
-    <input type="text" id="f-q" placeholder="搜索仓库名 / 标签 / 备注 / 用途…">
+    <input type="text" id="f-q" placeholder="全文搜索仓库 / 正文 / 逐字稿 / 笔记…">
     <div class="csd" id="f-sort">
       <button type="button" class="csd-trg" id="f-sort-trg">最近收藏</button>
       <div class="csd-panel" id="f-sort-panel">
@@ -452,6 +454,7 @@ function cardHTML(it){
     (meta.description?'<div class="row"><div class="k">用途</div><div class="v">'+esc(meta.description)+'</div></div>':'')+
     (tech?'<div class="row"><div class="k">技术栈</div><div class="chips">'+tech+'</div></div>':'')+
     (c.why_needed?'<div class="row"><div class="k">你为什么可能需要它</div><div class="v">'+esc(c.why_needed)+'</div></div>':'')+
+    (it.search_excerpt?'<div class="search-hit"><div class="search-hit-label">全文命中</div>'+esc(it.search_excerpt)+'</div>':'')+
     (tags?'<div class="row"><div class="k">多维标签</div><div class="chips">'+tags+'</div></div>':'')+
     (it.status==='error'?'<div class="row"><div class="k">解析失败原因</div><div class="err-msg">'+esc(it.error||'未知错误')+'</div></div>':'')+
     (c._stub?'<div class="row"><div class="k">待补充</div><div class="stub-msg">'+esc(c.stub_reason||'元数据被反爬拦截，可在备注中补充视频文案')+'</div></div>':'')+
@@ -874,6 +877,7 @@ document.getElementById('f-q').addEventListener('input',function(){
   clearTimeout(_t); _t=setTimeout(function(){ updateClearBtn(); load(); }, 300);
 });
 document.getElementById('f-sort').addEventListener('change', load);
+
 
 // 后台出卡后自动刷新（保留筛选状态与搜索框输入）
 // 若有卡片正在重算，跳过本次轮询，避免整页重建把"重算中"按钮冲掉导致无法再次点击

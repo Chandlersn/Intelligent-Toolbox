@@ -25,9 +25,18 @@
     background-size:190px 170px, 230px 210px, 260px 190px, 210px 240px, 300px 220px; }
   /* 节点光晕：同色高斯模糊圆，浮在节点下方。主流图谱的"玻璃/辉光"底子，
      没有它节点就是"贴"在背景上而不是"浮"着。 */
-  .node .glow{ filter:url(#gblur); opacity:.5; }
+  /* hover 时光晕同步提亮：节点从"浮着"变成"被照亮"，
+     配合缩放一起构成"抬起来"的体感（缩放是形，提亮是光，光比形更像悬浮）。 */
+  .node .glow{ filter:url(#gblur); opacity:.5; transition:opacity .22s ease; }
+  /* 选中：常亮一档。选中态原本只有一圈描边，在压暗的背景里"存在感"弱于 hover，
+     而选中是比 hover 更强的意图 —— 给它一点常驻的光。 */
+  .node.sel .glow{ opacity:.8; }
+  .node:hover .glow{ opacity:.85; }   /* hover 最亮且短暂；放在 sel 之后以压过 sel */
   svg{ display:block; width:100%; height:62vh; touch-action:none; }
-  .node circle{ cursor:pointer; transition:opacity .2s; }
+  /* 选中环 / 钉住描边要能"长出来"：只过渡 opacity 的话，
+     点选时描边是硬切进去的，"我选中的是这个"缺少落定感。 */
+  .node circle{ cursor:pointer;
+    transition:opacity .2s, stroke-width .18s ease, stroke-opacity .18s ease; }
   .node text{ font-size:10px; fill:var(--muted); pointer-events:none; user-select:none;
     transition:opacity .2s; paint-order:stroke; stroke:var(--bg); stroke-width:3px;
     stroke-linejoin:round; }
@@ -98,15 +107,22 @@
      内层 .pos 专管位置 translate（JS 每帧写）。两者分开，
      JS 写位置就不会把 CSS 动画的 transform 顶掉（SVG 上 CSS transform 优先于属性）。 */
   .node{ transform-box:fill-box; transform-origin:center;
-    transition:transform .28s cubic-bezier(.2,1.5,.4,1), opacity .3s ease; }
+    transition:transform .28s cubic-bezier(.2,1.35,.4,1), opacity .3s ease; }
   /* hover 邻接聚焦的三档视觉：聚焦点最亮 → 邻居中亮 → 其余压暗。
      强度差是"悬浮感"的关键：若非邻接也压到同样暗，整张图像被整体关掉；
      若压得不够，又看不出聚焦。主流量产图谱用 1.0 / 0.9 / 0.08~0.15 这类分层。
      theme.css 的 .dim 带 !important，所以强度走 --dim-v 变量覆写。 */
   svg{ --dim-v:.13; --dim-edge-v:.06; }
-  .node.near{ opacity:.5; }
+  /* 邻接三档：焦点 1.0 / 邻居 .72 / 其余 .13。
+     邻居原本是 .5，与压暗档只差一档半，聚焦层级是糊的 ——
+     提到 .72 才读得出"这一撮被点亮了"。 */
+  .node.near{ opacity:.72; }
   .node.near circle{ stroke-opacity:.55; }
   .node:hover{ transform:scale(1.22); }
+  /* 拖动中"被抓着"的视觉要压过 hover 缩放：
+     两者叠乘（1.22 × dragPulse 的 1.1~1.24 ≈ 1.5）会过冲成"果冻"，
+     拖拽档统一收成一个明确的抓取尺度，手指落点也更清楚。 */
+  .node.dragging, .node.dragging:hover{ transform:scale(1.06); }
   .edge.hot{ stroke-width:2.4; opacity:.95; }
   /* 静止 = 彻底静止：节点是安静的圆点，生命感来自「有目的」的交互
      （hover 聚焦缩放 / 选中 ping / 碰撞 squash / 拖拽 dragPulse / 吸附 snap）
@@ -115,24 +131,24 @@
      "一直动、没法选中、像果冻" 的根源（对照 lantern：它静止时节点完全静止，
      动的全是相机与聚焦）。 */
   .node .core{ transform-box:fill-box; transform-origin:center; }
-  /* 撞击挤压：碰撞那一瞬节点被压扁再弹回 —— 这才是"弹性球"的体感，不是永远在呼吸。
-     只在运动中、且发生碰撞(ping)的节点上触发；普通节点运动时不缩放。 */
-  @keyframes squash{ 0%{transform:scale(1)} 28%{transform:scale(1.24,.8)} 60%{transform:scale(.9,1.1)} 100%{transform:scale(1)} }
-  svg.moving .node.ping .core{ animation: squash .34s ease-out; transform-box:fill-box; transform-origin:center; }
+  /* 撞击挤压（碰撞那一瞬被压扁再弹回）改由 JS 的 WAAPI 起，见 pingNode()：
+     一次性动画用 el.animate() 就是"每次都是新动画"，不需要
+     "移除 class + 强制回流 + 再加 class"那套把戏 ——
+     拖拽碰撞密集时，每撞一次就来一次强制同步布局是要掉帧的。 */
   /* hover：一圈扩散的涟漪，把注意力明确拽到这个点上。
      是一次性播放而非无限循环 —— 悬停是"看"，看的时候不该有东西一直闪。 */
   .node .halo{ fill:none; stroke:var(--accent); stroke-width:2; opacity:0;
     transform-box:fill-box; transform-origin:center; }
   .node:hover .halo{ animation: ping 1.1s ease-out; }
   @keyframes ping{ 0%{ opacity:.7; transform:scale(.6) } 70%,100%{ opacity:0; transform:scale(2.1) } }
-  /* 钉住瞬间的吸附回弹 */
-  .node.snap{ animation:snap .42s cubic-bezier(.2,1.6,.35,1); }
-  @keyframes snap{ 0%{transform:scale(1.14)} 55%{transform:scale(.95)} 100%{transform:scale(1)} }
-  /* 点击选中 / 碰撞：一次性扩散。
-     碰撞脉冲要比选中稍短促 —— 选中是"我点的你"，碰撞是"你被撞到了"，
-     后者发生在任何一对节点之间，节奏拖沓会变成一片糊影，所以更短、更淡。 */
-  .node.ping .halo{ animation:ping .42s ease-out; }
-  @keyframes ping{ 0%{ opacity:.75; transform:scale(.6) } 75%,100%{ opacity:0; transform:scale(2.1) } }
+  /* 钉住瞬间的吸附回弹同样交给 WAAPI，见 snapNode()：
+     「重置视图」要给每一个节点起一次，CSS 版得逐个 remove → 强制回流 → add，
+     N 个节点就是 N 次同步布局 —— 节点一多，按一下重置就明显卡一下。 */
+  /* 点击选中 / 碰撞：一次性扩散，由 WAAPI 发起（见 pingNode）。
+     ★ 这里原先还有一份 .node.ping .halo + 同名 @keyframes ping，
+       与上面 hover 那份重名 —— CSS 里后定义的静默覆盖先定义的，
+       于是 hover 的慢涟漪其实一直在用碰撞那份的参数（.75→0 / 75%），
+       hover 那份等于死代码。删掉重复定义后，1.1s 的慢涟漪才真的是它自己。 */
   /* 拖拽中的节点：放大 + 一圈实线抓取环。
      拖动时图里同时有几十个节点在动，没有明确的"我抓着谁"信号，
      手感就会散掉 —— 视觉上必须把被拖的那个钉成焦点。 */
@@ -168,9 +184,26 @@
   .lite .node .halo{ display:none; }
   .lite .node.dragging .core{ animation:dragPulse .9s ease-in-out infinite; }
   .lite .node.dragging .halo{ display:block; opacity:.55; animation:none; }
-  /* 碰撞脉冲在 lite 档也保留：它是一次性动画，代价与节点数无关（N 个里的 1 个），
-     而没有它碰撞就完全不可见 —— 这属于"砍花样"而不是"砍功能"。 */
-  .lite .node.ping .halo{ display:block; animation:ping .42s ease-out; }
+  /* 碰撞脉冲在 lite 档也保留（在 pingNode() 里判断）：它是一次性动画，
+     代价与节点数无关（N 个里的 1 个），而没有它碰撞就完全不可见。
+     lite 档只砍"挤压形变"，涟漪照旧 —— 砍的是花样，不是反馈。 */
+
+  /* ---------- 系统「减少动态效果」 ----------
+     JS 那半（一次性动效）已经在 REDUCED 常量里关掉了，这里补 CSS 那半：
+     涟漪 / 拖拽脉冲 / 边流动 / lite 微摆 / 入场生长 全部停掉。
+     ★ 保留的是"状态变化"（聚焦变暗、邻接高亮、选中环）—— 那是信息，不是装饰，
+       关掉它们会让图谱读不出来。
+     ★ 节点/边的静止值都是可见的（节点 opacity 1、边 .5），
+       所以砍掉入场动画不会出现"元素停在透明状态"的问题。 */
+  @media (prefers-reduced-motion: reduce){
+    .node:hover .halo,
+    .node.dragging .core,
+    svg.moving.lite .node .pos,
+    svg.moving .edge.bridge,
+    .edge, .edge.grow, .edge.bridge{ animation:none !important; }
+    /* 缩放回弹属于"动"，去掉；只留状态过渡（变暗/高亮），它承载的是信息 */
+    .node{ transition:opacity .3s ease !important; }
+  }
   /* 节点多时的替代动效：整张图极缓慢地轻微起伏（一个动画顶所有节点，开销恒定）。
      同样只在 svg.moving 期间生效 —— 静止的图就该彻底静止。 */
   svg.moving.lite .node .pos{ animation:sway 9s ease-in-out infinite; }
@@ -649,7 +682,9 @@ function initGraph(){
     g.appendChild(pos);
     camG.appendChild(g);
     bindNode(g, n);
-    return {g, pos, c, t, n};
+    // halo/glow 一并带出来：一次性动效（涟漪 / 挤压 / 提亮）直接对它们起 WAAPI，
+    // 不必每次用 querySelector 再找一遍。
+    return {g, pos, c, t, n, halo, glow};
   });
   window.__edgeEls = edgeEls;
   window.__nodeEls = nodeEls;
@@ -1047,20 +1082,65 @@ function render(){
   });
 }
 
-/* 碰撞/选中时的一次性扩散脉冲。碰撞必须有可见反馈：
-   两个球"弹开"如果没有任何视觉提示，眼睛会把它读成"抖动"而不是"撞了一下"。 */
+/* ---------- 一次性动效：统一走 Web Animations API ----------
+   为什么从"切 class + 强制回流"换成 WAAPI：
+   ① 重启一次性 CSS 动画必须先 remove class、再 void getBoundingClientRect() 强制回流、
+      最后 add 回去。碰撞密集的一次拖拽会触发几十次同步布局；
+      「重置视图」更是每个节点各来一次 —— N 个节点就是 N 次强制回流。
+   ② el.animate() 每次调用都是全新的动画对象，天然可重启、可重叠，
+      不需要任何"骗浏览器重排"的把戏，也不写 DOM class（省一次属性写入 + 样式重算）。
+   ③ 尊重系统的「减少动态效果」：开了就不播一次性动画（碰撞反馈仍在，只是不闪）。 */
+const REDUCED = !!(window.matchMedia &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+function once(el, frames, opts){
+  if(!el || REDUCED) return null;
+  try { return el.animate(frames, opts); } catch(_){ return null; }  // 老浏览器没 WAAPI 就安静跳过
+}
+
+/* 碰撞 / 选中时的一次性扩散脉冲。碰撞必须有可见反馈：
+   两个球"弹开"如果没有任何视觉提示，眼睛会把它读成"抖动"而不是"撞了一下"。
+   force=true 用于用户显式点击选中：那是"我点的你"，不该被碰撞的节流吃掉。 */
 let _pingBusy = null;
-function pingNode(n){
+function pingNode(n, force){
+  if(REDUCED) return;               // 系统要求减少动效：碰撞的物理照旧，只是不闪
   const el = (window.__nodeEls || []).find(o => o.n === n);
   if(!el) return;
   // 同一节点在一次碰撞里可能被反复命中（多对接触），节流一下
   const now = performance.now();
-  if(_pingBusy && _pingBusy.get(n) && now - _pingBusy.get(n) < 220) return;
+  if(!force && _pingBusy && _pingBusy.get(n) && now - _pingBusy.get(n) < 220) return;
   if(!_pingBusy) _pingBusy = new Map();
   _pingBusy.set(n, now);
-  el.g.classList.remove("ping");
-  void el.g.getBoundingClientRect();   // 强制回流，让动画能重新触发
-  el.g.classList.add("ping");
+  /* lite 档（节点 >90）为省渲染把 .halo 设成 display:none。
+     ★ 涟漪前必须临时放开、播完再收回去 —— 否则节点一多，碰撞就完全没有可见反馈，
+       那不是"降档"而是把功能一起砍了（原 CSS 靠 .lite .node.ping .halo 打这个补丁，
+       改成 WAAPI 后这层补丁得由 JS 承担）。 */
+  const lite = !!(el.halo && svg.classList.contains("lite"));
+  if(lite) el.halo.style.display = "block";
+  const restore = ()=>{ if(lite) el.halo.style.display = ""; };
+  // ① 涟漪：一次性扩散，比选中略短促（420ms）—— 碰撞发生在任意一对节点之间，
+  //    拖沓会糊成一片影子。
+  const anim = once(el.halo, [{opacity:.75, transform:"scale(.6)"},
+                              {opacity:0,   transform:"scale(2.1)"}],
+                    {duration:420, easing:"ease-out"});
+  if(anim && anim.finished) anim.finished.then(restore, restore);
+  else if(lite) setTimeout(restore, 460);
+  // ② 挤压：撞上的那一下被压扁再弹回 —— 这才是"弹性球"的体感，不是永远在呼吸。
+  //    lite 档跳过形变：上百个节点同时做 scale 会吃帧，涟漪已足够读出"撞了一下"。
+  if(!lite){
+    once(el.core, [{transform:"scale(1)"},
+                   {transform:"scale(1.24,.8)", offset:.28},
+                   {transform:"scale(.9,1.1)",  offset:.6},
+                   {transform:"scale(1)"}],
+         {duration:340, easing:"ease-out"});
+  }
+}
+/* 吸附回弹：让"放手"/"重置"有落定的实感，而不是啪一下停死。 */
+function snapNode(el){
+  if(!el) return;
+  once(el.g, [{transform:"scale(1.14)"},
+              {transform:"scale(.95)", offset:.55},
+              {transform:"scale(1)"}],
+       {duration:420, easing:"cubic-bezier(.2,1.6,.35,1)"});
 }
 
 /* ---------- 交互 ---------- */
@@ -1187,11 +1267,7 @@ function dragEnd(){
     const el = (window.__nodeEls || []).find(o => o.n === n);
     if(el) el.g.classList.remove("pinned");
     // 吸附回弹一下：让"放手"有落定的实感，而不是啪一下停死
-    if(el){
-      el.g.classList.remove("snap");
-      void el.g.getBoundingClientRect();
-      el.g.classList.add("snap");
-    }
+    snapNode(el);
     // 摆位记忆不在这里落盘：此刻节点还在惯性滑行，存的是松手点而非最终静止点。
     // 真正的 savePositions() 放在 tick 里"余波结束"那一帧（见 settledAny）。
   } else {
@@ -1282,13 +1358,9 @@ function hideTip(){ tip.style.opacity=0; }
 function select(id){
   selId = (selId===id)? null : id;
   if(selId && !String(selId).startsWith("D:")){
-    // 选中的那一下扩散一圈：让"高亮"有起点，而不是整图一起变暗
-    const el = (window.__nodeEls || []).find(o => o.n.id === selId);
-    if(el){
-      el.g.classList.remove("ping");
-      void el.g.getBoundingClientRect();
-      el.g.classList.add("ping");
-    }
+    // 选中的那一下扩散一圈：让"高亮"有起点，而不是整图一起变暗。
+    // force=true：用户显式点击，不做碰撞那套 220ms 节流。
+    if(byId[selId]) pingNode(byId[selId], true);
   }
   applyHighlight();
 }
@@ -1299,6 +1371,16 @@ function toggleDomain(name){
   const any = nodes.some(n=>n.domain===name && selId!=="D:"+name);
   selId = any ? ("D:"+name) : null;
   applyHighlight();
+}
+/* 只在"真的要变"时才写 class。
+   hover 时 applyHighlight() 要遍历全部节点 + 全部边（同组内两两相连，边是 O(N²)），
+   每次 pointerenter 都无脑 toggle 一遍 = 上千次 DOM 属性写入 + 样式重算，
+   鼠标扫过节点密集的区域会明显发涩。
+   先 contains() 比对一次（纯内存、不碰 DOM），状态没变就一个字节都不写 ——
+   实际每次 hover 真正会变的往往只有几十个元素。 */
+function setCls(el, name, on){
+  on = !!on;
+  if(el.classList.contains(name) !== on) el.classList.toggle(name, on);
 }
 function applyHighlight(){
   const domainFilter = selId && String(selId).startsWith("D:") ? selId.slice(2) : null;
@@ -1316,9 +1398,9 @@ function applyHighlight(){
     let on = true;
     if(domainFilter) on = (nodeGroup(n) === domainFilter);
     else if(focusing) on = (n.id===focusId || fnb.has(n.id));
-    g.classList.toggle("dim", !on);
-    g.classList.toggle("sel", n.id===selId);
-    g.classList.toggle("near", focusing && n.id!==focusId && fnb.has(n.id));
+    setCls(g, "dim", !on);
+    setCls(g, "sel", n.id===selId);
+    setCls(g, "near", focusing && n.id!==focusId && fnb.has(n.id));
   });
   window.__edgeEls.forEach(({el,e})=>{
     let hot=false, on=true;
@@ -1329,8 +1411,8 @@ function applyHighlight(){
       hot = on;
     }
     // 桥接边是「碰撞」重点：除非显式被过滤掉，否则始终高亮（不被 dim）
-    el.classList.toggle("dim", !on && !e.bridge);
-    el.classList.toggle("hot", hot || (e.bridge && (focusing || domainFilter)));
+    setCls(el, "dim", !on && !e.bridge);
+    setCls(el, "hot", hot || (e.bridge && (focusing || domainFilter)));
   });
 }
 
@@ -1346,11 +1428,7 @@ document.getElementById("btn-reset").onclick = ()=>{
     n.vx = 0; n.vy = 0;
   });
   // 从中心"炸开"一下再落位，比瞬移更能看出图重新活了一遍
-  window.__nodeEls.forEach(({g})=>{
-    g.classList.remove("snap");
-    void g.getBoundingClientRect();
-    g.classList.add("snap");
-  });
+  window.__nodeEls.forEach(snapNode);
   alpha = 1; wake();
   _fitPending = true;   // 重新散开后，等收敛完再取景（此刻取景会框住"炸开前"的旧位置）
 };

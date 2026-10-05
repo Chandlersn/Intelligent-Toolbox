@@ -7,11 +7,15 @@
 """
 
 import json
+import os
+import sqlite3
+import tempfile
 import threading
 import http.client
 from http.server import ThreadingHTTPServer
+from urllib.parse import quote
 
-from common import Base, config, db, server
+from common import Base, analyze, config, db, server
 
 
 class TestHttp(Base):
@@ -148,6 +152,107 @@ class TestHttp(Base):
         code, body = self.jreq("GET", "/api/items?q=bun")
         self.assertEqual(code, 200)
         self.assertEqual(len(body["items"]), 1)
+
+    def test_fulltext_search_finds_chinese_raw_and_tracks_updates(self):
+        rid = self.add_repo("https://example.com/video", meta={"name": "转录素材"})
+        conn = db.connect()
+        conn.execute("UPDATE repos SET raw=? WHERE id=?", ("这段逐字稿讨论本地优先知识库和 CRDT 同步。", rid))
+        conn.commit(); conn.close()
+        code, body = self.jreq("GET", "/api/search?q=" + quote("本地优先知识库"))
+        self.assertEqual(code, 200)
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["items"][0]["id"], rid)
+        self.assertIn("本地优先", body["items"][0]["excerpt"])
+        code, body = self.jreq("GET", "/api/cards?q=CRDT")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["count"], 1, "卡片页搜索也应覆盖原文逐字稿")
+        conn = db.connect()
+        conn.execute("UPDATE repos SET raw='更新后的其他内容' WHERE id=?", (rid,))
+        conn.commit(); conn.close()
+        code, body = self.jreq("GET", "/api/search?q=CRDT")
+        self.assertEqual(body["count"], 0, "UPDATE 触发器应移除旧索引文本")
+        code, body = self.jreq("GET", "/api/search?q=" + quote("其他"))
+        self.assertEqual(body["count"], 1, "UPDATE 触发器应加入新索引文本")
+
+    def test_fulltext_search_short_query_uses_fallback(self):
+        rid = self.add_repo("https://github.com/a/b", note="Go 工具")
+        code, body = self.jreq("GET", "/api/search?q=Go")
+        self.assertEqual(code, 200)
+        self.assertEqual([x["id"] for x in body["items"]], [rid])
+
+    def test_search_ask_returns_cited_sources(self):
+        rid = self.add_repo("https://example.com/crdt", meta={"name": "CRDT 入门"},
+                            card={"domain": "数据库"})
+        conn = db.connect()
+        conn.execute("UPDATE repos SET raw='CRDT 是一种用于分布式数据同步的冲突无关数据类型。' WHERE id=?", (rid,))
+        conn.commit(); conn.close()
+        from unittest.mock import patch
+        with patch.object(server, "_chat_search_terms", return_value=["CRDT"]), \
+             patch.object(analyze, "_llm_chat", return_value="这是收藏中的 CRDT 说明 [1]。"):
+            result = server.ask_collection("CRDT 是什么")
+        self.assertTrue(result["ok"])
+        self.assertIn("[1]", result["answer"])
+        self.assertEqual(result["sources"][0]["id"], rid)
+        with patch.object(server, "_chat_search_terms", return_value=["CRDT"]), \
+             patch.object(analyze, "_llm_chat", return_value="这是收藏中的 CRDT 说明 [1]。"):
+            code, response = self.jreq("POST", "/api/search/ask", {"question": "CRDT 是什么"})
+        self.assertEqual(code, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["sources"][0]["id"], rid)
+        code, _ = self.jreq("POST", "/api/search/ask", {"question": "CRDT?"},
+                            headers={"Origin": "https://evil.example"})
+        self.assertEqual(code, 403)
+
+    def test_export_json_excludes_secrets(self):
+        rid = self.add_repo("https://github.com/a/b", meta={"name": "a/b"},
+                            card={"domain": "工具"})
+        conn = db.connect()
+        db.set_settings(conn, "llm_api_key", "secret-llm-key")
+        db.set_settings(conn, "github_token", "secret-gh-token")
+        conn.commit(); conn.close()
+        code, data, headers = self.req("GET", "/api/export?format=json")
+        self.assertEqual(code, 200)
+        body = json.loads(data.decode("utf-8"))
+        self.assertEqual(body["format"], "intelligent-toolbox-export-v1")
+        self.assertEqual(body["items"][0]["id"], rid)
+        self.assertNotIn(b"secret-llm-key", data)
+        self.assertNotIn(b"secret-gh-token", data)
+        self.assertIn("attachment", headers["Content-Disposition"])
+
+    def test_markdown_export_and_sqlite_backup_restore(self):
+        rid = self.add_repo("https://example.com/article", note="留作回顾")
+        conn = db.connect()
+        conn.execute("UPDATE repos SET raw='正文片段 LOCAL-FIRST' WHERE id=?", (rid,))
+        conn.commit(); conn.close()
+        code, md, headers = self.req("GET", "/api/export?format=markdown")
+        self.assertEqual(code, 200)
+        self.assertIn("正文片段 LOCAL-FIRST".encode("utf-8"), md)
+        self.assertIn("text/markdown", headers["Content-Type"])
+        code, backup, headers = self.req("GET", "/api/backup")
+        self.assertEqual(code, 200)
+        self.assertTrue(backup.startswith(b"SQLite format 3\x00"))
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "restored.db")
+            with open(path, "wb") as f:
+                f.write(backup)
+            restored = sqlite3.connect(path)
+            found = restored.execute("SELECT raw FROM repos WHERE id=?", (rid,)).fetchone()
+            self.assertEqual(found[0], "正文片段 LOCAL-FIRST")
+            restored.close()
+
+    def test_review_rotation_persists_reviewed_at(self):
+        first = self.add_repo("https://github.com/a/first", meta={"name": "first"}, card={"domain": "工具"})
+        second = self.add_repo("https://github.com/a/second", meta={"name": "second"}, card={"domain": "工具"})
+        code, body = self.jreq("GET", "/api/review?limit=1")
+        self.assertEqual(body["items"][0]["id"], first)
+        code, result = self.jreq("POST", "/api/review/mark", {"ids": [first]})
+        self.assertTrue(result["ok"])
+        code, body = self.jreq("GET", "/api/review?limit=1")
+        self.assertEqual(body["items"][0]["id"], second)
+        conn = db.connect()
+        reviewed = conn.execute("SELECT reviewed_at FROM repos WHERE id=?", (first,)).fetchone()[0]
+        conn.close()
+        self.assertTrue(reviewed)
 
     # ---- 写接口 ----
     def test_collect_and_duplicate(self):

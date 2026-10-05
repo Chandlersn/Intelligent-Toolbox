@@ -12,6 +12,7 @@ __pycache__/
 
 # 工作记忆（项目私有）
 .workbuddy/
+.workbuddy-ai/
 
 # 依赖
 node_modules/

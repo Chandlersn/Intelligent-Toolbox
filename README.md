@@ -39,17 +39,27 @@
 | 主题归纳 | `src/topics.py` | 集合级归纳：N 条 → M 个主题（成员/覆盖度/缺口），draft→confirmed 生命周期 |
 | 探索页 | `web/explore.html` · `web/topics.html` · `web/map.html` | 主题与图谱同一页内分段切换；跨侧桥接、缺角、领域相邻 |
 | 画像 / 推荐 | `web/profile.html` · `web/recommend.html` | 行为聚合；弱协同推荐 |
-| 存储 | `src/db.py` | SQLite（WAL）+ 版本化迁移 |
+| 全文 / 对话检索 | `repo_fts` · `web/cards.html` | FTS5 trigram 中文子串检索；本地证据召回后由 LLM 回答并引用条目 |
+| MCP 查询 | `src/mcp_server.py` | stdio 只读工具：收藏检索、条目读取、统计；不暴露设置密钥 |
+| 导出 / 备份 | `/api/export` · `/api/backup` | Markdown / JSON 导出；SQLite Online Backup 一致性快照 |
+| 回顾重访 | `/api/review` · `web/cards.html` | 最久未回看的已出卡优先；回顾时间本机持久化 |
+| 存储 | `src/db.py` | SQLite（WAL）+ 版本化迁移 + FTS5 索引 |
 | 配置 | `src/config.py` | 全部可变项集中，`REPO_*` 覆盖，带安全默认值 |
 
 ---
 
 ## 快速开始
 
-需要 **Python 3.11+**，核心功能零 `pip install`：
+需要 **Python 3.11+**，核心功能零 `pip install`。无虚拟环境时：
 
 ```bash
 python run.py
+```
+
+Windows 上若项目已创建 `.venv`（例如安装了逐字稿依赖），请直接使用其解释器启动，避免重复切换进程：
+
+```powershell
+.venv/Scripts/python.exe run.py
 ```
 
 打开 `http://127.0.0.1:8732` 即可。
@@ -62,18 +72,42 @@ python run.py
 | 推荐页 | `/recommend.html` |
 | 画像页 | `/profile.html` |
 | 自检 | `/api/doctor` |
+| 全文搜索 API | `/api/search?q=关键词` |
+| 对话检索 API | `POST /api/search/ask`（需配置 LLM） |
+| Markdown / JSON 导出 | `/api/export?format=markdown` · `/api/export?format=json` |
+| SQLite 完整备份 | `/api/backup` |
+| MCP 只读查询 | `python src/mcp_server.py`（stdio） |
+
+### 全文与对话检索
+
+卡片页搜索框现在覆盖仓库元数据、备注、网页正文、抖音逐字稿与结构化笔记。SQLite FTS5 使用内置 `trigram` tokenizer，中文可按子串检索；1–2 个字符自动退回 LIKE。模型开启后可在「问问收藏箱」用自然语言检索，回答基于本地召回证据并附收藏条目引用。模型不可用时，全文搜索仍可用。
+
+### 本地 MCP
+
+MCP 服务只读打开本地 SQLite，不提供写入工具，也不会暴露 `app_settings` 中的 API Key。将以下 stdio server 条目合并到兼容客户端自己的配置（替换为实际绝对路径）；不要覆盖已有 server 配置：
+
+```json
+{
+  "mcpServers": {
+    "intelligent-toolbox": {
+      "command": "D:/个人开发/智能工具箱/.venv/Scripts/python.exe",
+      "args": ["D:/个人开发/智能工具箱/src/mcp_server.py"]
+    }
+  }
+}
+```
+
+提供 `search_saved_items`、`get_saved_item`、`get_collection_stats` 三个只读工具。无需单独启动 HTTP 服务以外的守护进程；MCP 客户端会按需启动 stdio 子进程。
+
+### 导出与备份
+
+设置页「导出与备份」可下载 Markdown（便于 Obsidian）或 JSON（收藏、图谱轴、主题、更新事件），两种内容导出都不含模型/GitHub 密钥。SQLite 完整备份采用 Online Backup API，包含应用设置与密钥；备份文件需妥善保管，不要公开分享。
 
 ---
 
 ## 配置（全可选）
 
-**接入 LLM（强烈建议但不强制）**：默认用内置规则出卡（离线、零配置），接上 LLM 后卡片、笔记、主题归纳质量会质变。本工具不内置任何厂商模型，而是复用一个外部 `llm.py` 模块——这样**密钥不落在本项目里**。把暴露 `AVAILABLE` 和 `chat(system, user, ...)` 的 `llm.py` 放进某目录，启动指向它即可：
-
-```bash
-REPO_LLM_ROOT=/path/to/your/llm-dir python run.py
-```
-
-打开 `/api/doctor` 看 `llm.available` 是否 `true`。
+**接入 LLM（强烈建议但不强制）**：默认用内置规则出卡（离线、零配置）；也可在「设置 → 模型与能力」配置任意 OpenAI 兼容服务的 Base URL、模型名与 API Key。设置存于本机 SQLite 的 `app_settings`，不会写入代码或日志；未启用/不可用时自动回退规则。旧版外部 `llm.py` 接入仍可通过 `REPO_LLM_ROOT` 使用。打开 `/api/doctor` 看 `llm.available` 是否为 `true`。
 
 **GitHub Token（可选）**：匿名搜索限速 10 次/分，配只读 token 解锁更高额度（`REPO_GITHUB_TOKEN=ghp_xxx`）。
 
@@ -119,9 +153,9 @@ python -m venv .venv && .venv/Scripts/python.exe -m pip install imageio-ffmpeg f
 | 存储层 | `src/db.py` | SQLite 统一连接（WAL）+ 版本化迁移 |
 | 配置层 | `src/config.py` | 全部可变项集中，`REPO_*` 覆盖 |
 
-**技术选型**：后端只用 Python 标准库（HTTP/SQLite/正则/urllib），核心零第三方依赖；前端原生 JS + CSS，无框架。LLM、转写等增强全部以「外部模块 / 可选依赖」接入，缺失时自动降级。
+**技术选型**：后端主服务只用 Python 标准库（HTTP/SQLite/正则/urllib），核心零第三方依赖；前端原生 JS + CSS，无框架。LLM 调用兼容 OpenAI API；FTS5 使用 SQLite 内置扩展；转写依赖是可选安装项，缺失时自动降级。MCP stdio server 同样只用标准库。
 
-**鉴权与安全**：默认只绑回环地址；写操作有同源守卫，只认本机回环来源。对外暴露时开 `REPO_TOKEN` 校验口令。LLM 密钥在你自己的 `llm.py` 里，不进本项目。
+**鉴权与安全**：默认只绑回环地址；写操作有同源守卫，只认本机回环来源。对外暴露时开 `REPO_TOKEN` 校验口令。LLM/GitHub 凭据存本机 SQLite 设置表，不进代码或日志；JSON/Markdown 内容导出会排除凭据。完整数据库备份包含凭据，需妥善保管。
 
 **存储**：收藏主表 `repos` 存地址、备注、多维卡片（含结构化笔记）、认知端原文；多轴数据（domain/tech/scene/gap/motive/timeline）为可从卡片重建的派生物，重算即同步。主题归纳产出自成 `topics` / `topic_members` 表，重算只替换 `draft`，已确认主题不受影响。
 
@@ -143,7 +177,7 @@ python -m venv .venv && .venv/Scripts/python.exe -m pip install imageio-ffmpeg f
 
 ## 隐私
 
-数据只存本机 SQLite，默认只绑 `127.0.0.1`，不出本机；音视频与转写全在本地，内容不经过任何第三方；LLM 密钥在你自己的 `llm.py` 里，不进库、不进日志。
+数据只存本机 SQLite，默认只绑 `127.0.0.1`；音视频与转写全在本地。启用远程 LLM 时，检索/分析所需文本会发往你配置的模型服务；API Key 保存在本地 SQLite 设置表、不进代码或日志。内容导出排除密钥，数据库备份包含密钥。
 
 ---
 

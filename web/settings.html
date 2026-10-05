@@ -52,6 +52,8 @@
   .msg{font-size:12px;color:var(--muted);margin-top:9px;min-height:16px}
   .msg.ok{color:var(--ok)}
   .msg.err{color:var(--err)}
+  .download-link{display:block;box-sizing:border-box;text-align:center;text-decoration:none;}
+  .backup-note{font-size:12px;color:var(--err);line-height:1.5;margin:8px 0 12px}
 </style>
 </head>
 <body data-nav="settings">
@@ -109,6 +111,16 @@
     <button class="abtn muted" id="clearTransient">清除本地过渡缓存</button>
     <button class="abtn muted" id="resetAppearance">恢复默认观感</button>
     <div class="msg" id="dataMsg"></div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-h">导出与备份</div>
+    <p class="sec-d">Markdown 适合阅读或放入 Obsidian；JSON 保留收藏、图谱轴、主题和更新事件，不含设置中的密钥。</p>
+    <a class="abtn muted download-link" href="/api/export?format=markdown" download>导出 Markdown</a>
+    <a class="abtn muted download-link" href="/api/export?format=json" download>导出完整 JSON</a>
+    <div class="split"></div>
+    <p class="backup-note">数据库快照包含本机应用设置（可能含 LLM API Key 和 GitHub Token）；备份文件请勿公开分享。</p>
+    <a class="abtn download-link" href="/api/backup" download>下载 SQLite 完整备份</a>
   </section>
 
   <section class="sec">

@@ -21,7 +21,10 @@ import config
 # v4 加 repo_events 表 + repos.last_checked_at（仓库更新检测）
 # v5 加 repos.kind（production/cognition 多源分类）+ repos.raw（原文/逐字稿）
 # v6 加 app_settings 表（应用内可配置项：内置远程模型）
-SCHEMA_VERSION = 6
+# v7 灯笼投递表；v8 主题归纳表（迁移长期由 init_db 幂等保障）
+# v9 FTS5 trigram 全文索引 + repos 写入触发器
+# v10 加 repos.reviewed_at（本地回顾重访节奏）
+SCHEMA_VERSION = 10
 
 
 def connect(path=None):

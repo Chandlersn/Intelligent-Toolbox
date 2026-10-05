@@ -51,15 +51,24 @@
 </header>
 
 <div class="field">
-  <label for="url">仓库地址 / 抖音链接 / 网页链接</label>
-  <input id="url" type="text" inputmode="url" placeholder="https://github.com/owner/repo 或 https://example.com/article" autocomplete="off">
+  <label for="url">仓库地址 / 仓库名 / 抖音链接 / 网页链接</label>
+  <input id="url" type="text" inputmode="url" placeholder="https://github.com/owner/repo，或直接输入仓库名（如 react）" autocomplete="off">
 </div>
 <div class="field">
   <label for="note">为什么收（可选，对关联图谱极有价值）</label>
   <textarea id="note" placeholder="比如：做个人知识库的灵感来源"></textarea>
 </div>
 <button class="collect" id="btn">收藏</button>
-<div class="hint">支持 GitHub / GitLab 仓库、抖音视频链接，以及网页 / 文章链接（自动抓取标题与正文并萃取）。复制即收藏，分析在后台跑，不打断你。</div>
+<div class="hint">支持 GitHub / GitLab 仓库、抖音视频链接，以及网页 / 文章链接（自动抓取标题与正文并萃取）。<b>直接输入仓库名也能用</b>：会自动检索 GitHub 上的高星仓库，点一条即可确认收藏。</div>
+
+<!-- 仓库名搜索 → 高星候选 → 二次确认 -->
+<div class="list" id="searchSec" style="display:none">
+  <div class="card">
+    <div class="sec-h" id="searchTitle">GitHub 高星仓库候选</div>
+    <div class="sec-note" id="searchHint"></div>
+    <div id="searchResults"></div>
+  </div>
+</div>
 
 <div class="list" id="batchSec">
   <details class="card batch">
@@ -129,19 +138,88 @@ function loadItems(){
   }).catch(function(){/* ignore */});
 }
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-document.getElementById('btn').addEventListener('click',function(){
-  var url=document.getElementById('url').value.trim();
-  var note=document.getElementById('note').value.trim();
-  if(!url){ toast('先粘贴仓库地址'); return; }
-  this.disabled=true;
-  fetch('/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,note:note})})
+function formatStars(n){
+  if(n==null) return '';
+  if(n>=1000) return (n/1000).toFixed(n>=10000?0:1)+'k';
+  return String(n);
+}
+function isUrlLike(v){
+  return /^https?:\/\//i.test(v) || v.indexOf('://')>=0;
+}
+function doCollect(url, note, cb){
+  fetch('/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,note:note||''})})
+    .then(function(r){return r.json()})
+    .then(function(d){ cb && cb(!!d.ok, d); })
+    .catch(function(){ cb && cb(false,{error:'网络异常'}); });
+}
+function doSearch(query){
+  var sec=document.getElementById('searchSec'),
+      box=document.getElementById('searchResults'),
+      hint=document.getElementById('searchHint');
+  sec.style.display='block';
+  hint.textContent='正在检索 GitHub 高星仓库…';
+  box.innerHTML='<div class="sk" style="height:15px;width:60%;margin:4px 0 10px"></div>'
+             + '<div class="sk" style="height:13px;width:44%;margin-bottom:10px"></div>';
+  fetch('/api/github/search?q='+encodeURIComponent(query))
     .then(function(r){return r.json()})
     .then(function(d){
-      if(d.ok){ toast(d.dup?'已经收藏过':'已收藏 ✓'); document.getElementById('url').value=''; document.getElementById('note').value=''; loadItems(); }
-      else { toast('失败：'+(d.error||'')); }
+      if(!d.ok){ hint.textContent=d.error||'搜索失败'; box.innerHTML=''; return; }
+      if(d.rate_limited){
+        hint.textContent='GitHub 搜索已限流（未配置 Token）。在「设置」页配置 Token 可提升额度。';
+      } else {
+        hint.textContent='点一条即可确认收藏（按星数排序）：';
+      }
+      renderCandidates(d.repos||[], query);
     })
-    .catch(function(){ toast('网络异常'); })
-    .finally(function(){ this.disabled=false; }.bind(this));
+    .catch(function(){ hint.textContent='网络异常，重试一次。'; box.innerHTML=''; });
+}
+function renderCandidates(repos, query){
+  var box=document.getElementById('searchResults');
+  if(!repos.length){ box.innerHTML='<span class="hint">没找到相关仓库，换个关键词试试。</span>'; return; }
+  box.innerHTML = repos.map(function(r){
+     var tags='';
+     if(r.language) tags+='<span class="tag">'+escapeHtml(r.language)+'</span>';
+     if(r.stars!=null) tags+='<span class="tag">★ '+formatStars(r.stars)+'</span>';
+     var top=(r.topics||[]).slice(0,5).map(function(t){return '<span class="tag">'+escapeHtml(t)+'</span>'}).join('');
+     var desc=r.description?'<div class="m">'+escapeHtml(r.description)+'</div>':'';
+     return '<div class="item cand" data-url="'+escapeHtml(r.url)+'"><div class="u">'+escapeHtml(r.full_name)+'</div>'+desc+tags+top+'</div>';
+  }).join('');
+  box.querySelectorAll('.cand').forEach(function(el){
+    el.addEventListener('click', function(){
+       var u=el.getAttribute('data-url');
+       document.getElementById('url').value='';
+       document.getElementById('searchSec').style.display='none';
+       var name=el.querySelector('.u').textContent;
+       doCollect(u,'', function(ok,d){
+         toast(ok ? ('已收藏 ✓ '+name) : ('失败：'+((d&&d.error)||'')));
+         if(ok) loadItems();
+       });
+    });
+  });
+}
+document.getElementById('btn').addEventListener('click',function(){
+  var val=document.getElementById('url').value.trim();
+  if(!val){ toast('先输入仓库地址或仓库名'); return; }
+  if(isUrlLike(val)){
+    // 直接收藏 URL（原流程）
+    var self=this; self.disabled=true;
+    fetch('/collect',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({url:val,note:document.getElementById('note').value.trim()})})
+      .then(function(r){return r.json()})
+      .then(function(d){
+        if(d.ok){ toast(d.dup?'已经收藏过':'已收藏 ✓'); document.getElementById('url').value=''; document.getElementById('note').value=''; loadItems(); }
+        else { toast('失败：'+(d.error||'')); }
+      })
+      .catch(function(){ toast('网络异常'); })
+      .finally(function(){ self.disabled=false; });
+  } else {
+    // 纯仓库名 / 关键词 → 检索高星候选 → 用户二次确认
+    doSearch(val);
+  }
+});
+// 输入内容是否像 URL → 动态切换按钮文案，提示当前是「收藏」还是「搜索」
+document.getElementById('url').addEventListener('input', function(){
+  document.getElementById('btn').textContent = isUrlLike(this.value.trim()) ? '收藏' : '搜索高星仓库';
 });
 
 // 书签工具：地址按当前来源动态生成，换端口/换机器不用改代码
